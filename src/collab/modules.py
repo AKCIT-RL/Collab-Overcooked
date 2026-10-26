@@ -294,6 +294,15 @@ class Module(object):
 
                     encoder_name = "gpt-4"
 
+                # Any other OpenAI model (gpt-4o-mini, gpt-4.1, ...)
+                elif "gpt" in self.model:
+                    client = OpenAI(api_key=openai.api_key)
+                    response = client.chat.completions.create(
+                        model=self.model, messages=messages, temperature=temperature
+                    )
+                    time.sleep(1)
+                    encoder_name = "gpt-4"
+
                 elif "deepseek" in self.model.lower():
                     client = OpenAI(api_key=openai.api_key, base_url=openai.api_base)
                     response = client.chat.completions.create(

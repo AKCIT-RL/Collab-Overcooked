@@ -24,6 +24,18 @@ def boolean_argument(value):
     """Convert a string value to boolean."""
     return bool(strtobool(value))
 
+def load_dotenv(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '.env')):
+    """Load KEY=VALUE lines from the repo-root .env without overriding variables already set."""
+    if not os.path.exists(path):
+        return
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            key, value = line.split('=', 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
 def check_recipe_parse(variant):
     recipe_name_list = os.listdir(PROMPT_DIR+'/recipe/') 
     recipe_filename = ""
@@ -235,14 +247,15 @@ if __name__ == '__main__':
     # these parsers are only required when using LLMPair.
 
     # model:'gpt-3.5-turbo-0125', 'gpt-3.5-turbo', 'gpt-4', 'gpt-4o','gpt-o1mini','gpt4-turbo','llama3-8B','Llama-3.1-8B-Instruct','Llama-3.1-70B-Instruct',"Yi-1.2-34B","yi-lightning","yi-large",'yi-medium',"Qwen2.5-7B-Instruct","Qwen2.5-72B-Instruct","Qwen2.5-14B-Instruct","Qwen2.5-32B-Instruct",'claude3_sonnet'
-    parser.add_argument('--gpt_model', type=str, default='gpt-3.5-turbo-0125')
+    load_dotenv()
+    parser.add_argument('--gpt_model', type=str, default=os.environ.get('LLM_MODEL', 'gpt-4o'), help='defaults to LLM_MODEL from .env')
     
     parser.add_argument('--retrival_method', type=str, default="recent_k", choices=['recent_k', 'bert_topk'], help='Use similarity-based(BERT, CLIP) retrieval or retrieve recent K history in dialog.')
     parser.add_argument('--K', type=int, default=0, help="The number of dialogues you want to retrieve.")
 
     # 
-    parser.add_argument('--model_dirname', type=str, default='.', help='absolute path of open-source model')      
-    parser.add_argument('--local_server_api', type=str, default= "http://localhost:8000/v1", help='IP and port address to connect with local open source llm')     
+    parser.add_argument('--model_dirname', type=str, default=os.environ.get('LLM_MODEL_DIRNAME', '.'), help='absolute path of open-source model (LLM_MODEL_DIRNAME in .env)')
+    parser.add_argument('--local_server_api', type=str, default=os.environ.get('LLM_BASE_URL', "http://localhost:8000/v1"), help='IP and port address to connect with local open source llm (LLM_BASE_URL in .env)')
     parser.add_argument('--mode', type=str, default='exp', choices=['exp', 'debug_validator', 'develop'], help='exp mode run step-by-step, demo mode run via traj')                                
     parser.add_argument('--test_mode', type=str, default='fix_task', choices=['fix_task', 'fix_time'])
     parser.add_argument('--save', type=boolean_argument, default=True, help='Whether save the result')
