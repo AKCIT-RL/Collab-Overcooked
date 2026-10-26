@@ -60,6 +60,7 @@ from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
 from overcooked_ai_py.agents.agent import AgentGroup
 from overcooked_ai_py.mdp.actions import Action
 from collab.modules import statistics_dict, tokenizer,model, turn_statistics_dict
+import collab.modules as llm_modules
 from collab.web_util import output_to_port, check_port_in_use, change_port
 import socket
 from utils import make_agent, get_example_embedding, combine_statistic_dict
@@ -104,6 +105,8 @@ def main(variant):
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
         filename = f"{save_dir}/experiment_{current_time}_{args.order}.json"
+        # raw LLM input/output; must not start with "experiment" or evaluation.py will try to load it
+        llm_modules.RAW_LOG_PATH = f"{save_dir}/llm_calls_{current_time}_{args.order}.jsonl"
 
         if mode == 'develop':
             """
@@ -172,6 +175,7 @@ def main(variant):
                 print(f'\n>>>>>>>>>>>>>time: {t}<<<<<<<<<<<<<<<<<<<<<\n')
                 map = env.mdp.state_string(s_t).replace('ø', 'o')
                 print(map)   
+                llm_modules.CURRENT_TICK = t
                 a_t, ingredient_for_pickup = team.joint_action(s_t) 
                 print(a_t)
                 dialogue_t = team.reset_dialogue()

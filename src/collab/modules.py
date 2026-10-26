@@ -99,6 +99,19 @@ TOKEN_LIMIT_TABLE = {
 sys.path.append(os.getcwd())
 EMBEDDING_MODEL = "text-embedding-3-small"
 
+# Set by main.py per episode; every LLM call is appended here as one JSON line.
+RAW_LOG_PATH = None
+CURRENT_TICK = None
+
+
+def log_raw_call(record):
+    if RAW_LOG_PATH is None:
+        return
+    import json
+
+    with open(RAW_LOG_PATH, "a") as f:
+        f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+
 
 class Module(object):
     """
@@ -213,6 +226,19 @@ class Module(object):
         while not get_response:
             if retry_count > 1:
                 rprint("[red][ERROR][/red]: Query GPT failed for over 3 times!")
+                log_raw_call(
+                    {
+                        "timestep": CURRENT_TICK,
+                        "agent": getattr(self, "name", None),
+                        "model": self.model,
+                        "temperature": temperature,
+                        "trace": trace,
+                        "rethink": rethink,
+                        "messages": messages,
+                        "response": None,
+                        "error": str(last_error),
+                    }
+                )
                 self.current_user_message["content"] = self.current_user_message[
                     "content"
                 ][:-40]
@@ -326,10 +352,23 @@ class Module(object):
 
             except Exception as e:
                 retry_count += 1
+                last_error = e
                 rprint("[red][OPENAI ERROR][/red]:", e)
                 time.sleep(1)
 
         rs = self.parse_response(response)
+        log_raw_call(
+            {
+                "timestep": CURRENT_TICK,
+                "agent": getattr(self, "name", None),
+                "model": self.model,
+                "temperature": temperature,
+                "trace": trace,
+                "rethink": rethink,
+                "messages": messages,
+                "response": rs,
+            }
+        )
         # count the number of tokens
         if "gpt" in encoder_name:
             encoding = tiktoken.encoding_for_model(encoder_name)
