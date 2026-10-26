@@ -1,0 +1,629 @@
+<title>Collab-Overcooked Replay</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: tarefa no topo, linha do tempo por agente no meio, detalhe do tick (cozinha | eventos) embaixo. */
+:root {
+  --bg: #f3f6f5; --surface: #ffffff; --sunk: #e8efed; --ink: #15302c; --muted: #5a726d; --line: #d3dedb;
+  --chef: #0f6b5c; --chef-soft: #d9efe9; --asst: #b06d06; --asst-soft: #fbecd2;
+  --shared: #5a4fb3; --shared-soft: #e6e3f8; --bad: #b42318; --bad-soft: #fde4e1; --good: #1f7a3d; --good-soft: #dcf2e3;
+  --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", sans-serif;
+  --body: "Atkinson Hyperlegible", "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1716; --surface: #16211f; --sunk: #1c2a28; --ink: #e3eeeb; --muted: #93aca7; --line: #2a3a37;
+    --chef: #5cc9b3; --chef-soft: #173a34; --asst: #f0b356; --asst-soft: #3a2b12;
+    --shared: #a99ff0; --shared-soft: #29254a; --bad: #ff8a7a; --bad-soft: #3d1a16; --good: #6fd18f; --good-soft: #163522;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1716; --surface: #16211f; --sunk: #1c2a28; --ink: #e3eeeb; --muted: #93aca7; --line: #2a3a37;
+  --chef: #5cc9b3; --chef-soft: #173a34; --asst: #f0b356; --asst-soft: #3a2b12;
+  --shared: #a99ff0; --shared-soft: #29254a; --bad: #ff8a7a; --bad-soft: #3d1a16; --good: #6fd18f; --good-soft: #163522;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.5; }
+.wrap {
+  max-width: 1280px; margin: 0 auto; display: grid; gap: 22px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 24px 64px;
+}
+h1, h2, h3 { font-family: var(--display); margin: 0; line-height: 1.15; text-wrap: balance; }
+h1 { font-size: 1.9rem; font-weight: 800; letter-spacing: -0.02em; }
+h2 { font-size: 1.1rem; font-weight: 600; }
+p { margin: 0; }
+code, .mono { font-family: var(--mono); font-size: 0.85em; }
+.eyebrow { font-family: var(--mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); }
+.muted { color: var(--muted); }
+button, select {
+  font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 7px; padding: 6px 12px; cursor: pointer;
+}
+button:hover, select:hover { border-color: var(--muted); }
+button:focus-visible, select:focus-visible, .tl-hit:focus-visible { outline: 2px solid var(--shared); outline-offset: 2px; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+
+/* top bar */
+.top { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: end; justify-content: space-between; }
+.top .stack { display: grid; gap: 4px; }
+.picker { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.picker select { max-width: min(100%, 460px); }
+#file { display: none; }
+
+/* task row */
+.task { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.8fr) minmax(0, 1.1fr); gap: 14px; }
+.recipe { white-space: pre-wrap; font-size: 0.92rem; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; padding: 4px 12px; border-radius: 999px; font-size: 0.9rem; width: fit-content; }
+.pill.good { background: var(--good-soft); color: var(--good); }
+.pill.bad { background: var(--bad-soft); color: var(--bad); }
+.stats { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+.stats dt { color: var(--muted); }
+.stats dd { margin: 0; font-weight: 700; }
+.refs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.refs ol { margin: 0; padding-left: 20px; font-family: var(--mono); font-size: 0.78rem; display: grid; gap: 2px; }
+.who { font-family: var(--display); font-weight: 600; font-size: 0.95rem; }
+.who.chef { color: var(--chef); } .who.asst { color: var(--asst); }
+
+/* timeline */
+.tl-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.tl { display: grid; position: relative; padding: 8px 10px 10px 0; width: max-content; min-width: 100%; }
+.tl > * { min-width: 0; }
+.tl-label { position: sticky; left: 0; z-index: 3; background: var(--surface); padding: 0 10px 0 12px; display: flex; align-items: center; font-family: var(--display); font-weight: 600; font-size: 0.9rem; }
+.tl-label.chef { color: var(--chef); } .tl-label.asst { color: var(--asst); }
+.tl-label.small { font-family: var(--mono); font-weight: 400; font-size: 0.7rem; color: var(--muted); }
+.tl-num { font-family: var(--mono); font-size: 0.7rem; color: var(--muted); text-align: center; padding-block: 2px 6px; font-variant-numeric: tabular-nums; }
+.tl-hit { border: 0; background: transparent; padding: 0; border-radius: 0; cursor: pointer; z-index: 1; }
+.tl-hit:hover { background: var(--sunk); }
+.tl-bar {
+  z-index: 2; pointer-events: none; margin: 3px 1px; border-radius: 5px; padding: 3px 6px;
+  font-family: var(--mono); font-size: 0.68rem; line-height: 1.25; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  display: flex; align-items: center;
+}
+.tl-bar.chef { background: var(--chef-soft); color: var(--chef); border: 1px solid color-mix(in srgb, var(--chef) 35%, transparent); }
+.tl-bar.asst { background: var(--asst-soft); color: var(--asst); border: 1px solid color-mix(in srgb, var(--asst) 35%, transparent); }
+.tl-bar.wait { background: transparent; border-style: dashed; color: var(--muted); }
+.tl-ev { z-index: 2; pointer-events: none; display: flex; gap: 2px; justify-content: center; align-items: center; font-size: 0.72rem; line-height: 1; padding-block: 3px; }
+.ev-call { color: var(--shared); } .ev-say { color: var(--ink); } .ev-err { color: var(--bad); font-weight: 700; } .ev-done { color: var(--good); font-weight: 700; } .ev-star { color: var(--good); font-size: 1rem; }
+.tl-sel { z-index: 0; background: var(--shared-soft); border-radius: 6px; pointer-events: none; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 0.8rem; color: var(--muted); }
+.legend b { font-weight: 700; margin-right: 4px; }
+
+/* tick detail */
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.controls .tick-name { font-family: var(--display); font-weight: 800; font-size: 1.4rem; margin-right: 8px; font-variant-numeric: tabular-nums; }
+.controls input[type=range] { flex: 1 1 200px; min-width: 0; accent-color: var(--shared); }
+.detail { display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); gap: 16px; align-items: start; }
+
+.kitchen { display: grid; gap: 4px; padding: 6px; background: var(--line); border-radius: 10px; aspect-ratio: 1; max-width: 100%; }
+.kc { position: relative; display: grid; place-items: center; text-align: center; border-radius: 5px; background: var(--surface); font-family: var(--mono); font-size: 0.66rem; color: var(--muted); line-height: 1.15; padding: 2px; min-width: 0; overflow: hidden; }
+.kc .big { display: block; font-weight: 600; font-size: 0.95rem; }
+.kc.counter { background: var(--sunk); }
+.kc.own-chef { background: var(--chef-soft); color: var(--chef); }
+.kc.own-asst { background: var(--asst-soft); color: var(--asst); }
+.kc .item { display: block; margin-top: 2px; padding: 1px 4px; border-radius: 4px; background: var(--shared-soft); color: var(--shared); font-weight: 600; overflow-wrap: anywhere; }
+.kc.player { background: var(--surface); }
+.tok { width: 78%; aspect-ratio: 1; border-radius: 50%; display: grid; place-items: center; color: var(--bg); font-weight: 700; font-size: 0.7rem; position: relative; }
+.tok.chef { background: var(--chef); } .tok.asst { background: var(--asst); }
+.tok .arrow { position: absolute; font-size: 0.9rem; color: var(--ink); }
+.tok .arrow.up { top: -12px; } .tok .arrow.down { bottom: -12px; } .tok .arrow.left { left: -11px; } .tok .arrow.right { right: -11px; }
+.kc.player .item { position: absolute; bottom: 2px; left: 2px; right: 2px; margin: 0; font-size: 0.6rem; }
+.state-list { display: grid; gap: 6px; font-size: 0.88rem; }
+.state-list div { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 8px; }
+
+.events { display: grid; gap: 14px; min-width: 0; }
+.agents { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.agent-card { border-radius: 10px; border: 1px solid var(--line); background: var(--surface); padding: 12px 14px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.agent-card.chef { border-top: 4px solid var(--chef); } .agent-card.asst { border-top: 4px solid var(--asst); }
+.kv { display: grid; gap: 2px; }
+.kv .k { font-size: 0.78rem; color: var(--muted); font-family: var(--mono); }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip { font-family: var(--mono); font-size: 0.76rem; padding: 2px 7px; border-radius: 5px; background: var(--sunk); overflow-wrap: anywhere; }
+.chip.now { background: var(--ink); color: var(--bg); }
+.chip.req { background: transparent; border: 1px dashed var(--muted); }
+.chip.pick::before { content: "▸ "; }
+.chip.done { background: var(--good-soft); color: var(--good); }
+
+.thread { display: grid; gap: 10px; }
+.call { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; }
+.avatar { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 0.72rem; color: var(--bg); }
+.avatar.chef { background: var(--chef); } .avatar.asst { background: var(--asst); }
+.call-body { display: grid; gap: 6px; min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.call.chef .call-body { border-left: 3px solid var(--chef); } .call.asst .call-body { border-left: 3px solid var(--asst); }
+.call-head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 0.82rem; }
+.say { font-size: 1rem; background: var(--sunk); border-radius: 8px; padding: 8px 12px; }
+.say.none { background: transparent; padding: 0; color: var(--muted); font-size: 0.85rem; font-style: italic; }
+details summary { cursor: pointer; color: var(--muted); font-size: 0.82rem; width: fit-content; }
+details[open] summary { margin-bottom: 4px; }
+.analysis { font-size: 0.9rem; white-space: pre-wrap; max-width: 80ch; }
+.empty { color: var(--muted); font-style: italic; padding: 10px 0; }
+.err { background: var(--bad-soft); color: var(--bad); border-radius: 8px; padding: 8px 12px; font-size: 0.88rem; display: grid; gap: 2px; }
+.err b { font-family: var(--display); }
+.reward { background: var(--good-soft); color: var(--good); border-radius: 8px; padding: 8px 12px; font-weight: 700; }
+.raw-inline { min-width: 0; border-top: 1px dashed var(--line); padding-top: 6px; }
+.raw-inline > summary { font-size: .8rem; }
+.raw-body { display: grid; gap: 8px; min-width: 0; margin-top: 6px; }
+.raw-msg { display: grid; gap: 4px; }
+.raw-msg .k { font-family: var(--mono); font-size: .78rem; color: var(--muted); }
+.prompt { white-space: pre-wrap; font-family: var(--mono); font-size: 0.74rem; background: var(--sunk); border-radius: 8px; padding: 10px 12px; max-height: 360px; overflow: auto; overflow-wrap: anywhere; }
+.section-title { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.help { font-size: 0.86rem; color: var(--muted); max-width: 90ch; }
+
+@media (max-width: 980px) {
+  .task { grid-template-columns: 1fr; }
+  .detail { grid-template-columns: 1fr; }
+  .detail .kitchen { width: min(100%, 340px); }
+}
+@media (max-width: 640px) {
+  .agents, .refs { grid-template-columns: 1fr; }
+}
+</style>
+
+<div class="wrap">
+  <div class="top">
+    <div class="stack">
+      <span class="eyebrow">Collab-Overcooked · replay de episódio</span>
+      <h1 id="title">Episódio</h1>
+    </div>
+    <div class="picker">
+      <label for="ep" class="muted">Episódio</label>
+      <select id="ep"></select>
+      <button id="open" type="button">Abrir logs…</button>
+      <input id="file" type="file" accept=".json,.jsonl,application/json" multiple>
+      <span id="loadMsg" class="muted" style="flex-basis:100%;text-align:right;font-size:.82rem" hidden></span>
+    </div>
+  </div>
+
+  <div class="task">
+    <div class="panel">
+      <span class="eyebrow">recipe · prompts/recipe/ · só o Chef recebe</span>
+      <div class="recipe" id="recipe"></div>
+    </div>
+    <div class="panel">
+      <span class="eyebrow">Resultado</span>
+      <span id="outcome" class="pill"></span>
+      <dl class="stats" id="stats"></dl>
+    </div>
+    <div class="panel">
+      <span class="eyebrow">reference · prompts/reference/ · gabarito das métricas</span>
+      <div class="refs" id="refs"></div>
+    </div>
+  </div>
+
+  <div class="panel" style="padding:14px 16px">
+    <div class="section-title"><h2>Linha do tempo</h2><span class="help">Cada coluna é um tick: um passo de movimento no grid. As barras mostram a ação de alto nível que cada agente está executando. O LLM só é consultado quando o agente termina ou erra uma ação. Durante as chamadas o jogo fica parado: todas acontecem antes do <code>env.step</code>, então um tick pode ter várias (a conversa inteira e as correções). Clique numa coluna para ver o tick.</span></div>
+    <div class="tl-wrap"><div class="tl" id="tl"></div></div>
+    <div class="legend">
+      <span><b class="ev-call">●</b>chamada ao LLM (content)</span>
+      <span><b class="ev-say">◆</b>say ≠ [NOTHING]</span>
+      <span><b class="ev-done">✓</b>ação em total_action_list</span>
+      <span><b class="ev-err">✕</b>validator_error / format_error</span>
+      <span><b class="ev-star">★</b>pedido entregue</span>
+      <span><b style="border:1px dashed var(--muted);padding:0 6px;border-radius:4px">wait</b>esperando</span>
+    </div>
+  </div>
+
+  <div class="controls">
+    <span class="tick-name" id="tickName">Tick 0</span>
+    <button id="prev" type="button" aria-label="Tick anterior">◀</button>
+    <button id="play" type="button">Reproduzir</button>
+    <button id="next" type="button" aria-label="Próximo tick">▶</button>
+    <input id="slider" type="range" min="0" max="0" value="0" aria-label="Tick">
+    <span class="muted mono">← → no teclado</span>
+  </div>
+
+  <div class="detail">
+    <div class="panel">
+      <span class="eyebrow">Cozinha no início do tick</span>
+      <span class="help">O movimento primitivo de cada tick (↑ ↓ ← →, interagir) não é salvo no log. Compare o mapa entre ticks.</span>
+      <div class="kitchen" id="kitchen"></div>
+      <div class="state-list" id="state"></div>
+    </div>
+    <div class="events">
+      <div class="agents" id="agents"></div>
+      <div class="panel">
+        <div class="section-title"><h2>content</h2><span class="help">Respostas do LLM neste tick, na ordem em que aconteceram. Cada uma tem três campos: <code>analysis</code> (raciocínio), <code>plan</code> (ações que o próprio agente executa, separadas por <code>;</code>) e <code>say</code> (mensagem ao parceiro). Um <code>say</code> diferente de <code>[NOTHING]</code> abre uma conversa, e o parceiro é chamado para responder; essas falas formam <code>communication.turn</code>. Itens <code>request(...)</code> no <code>plan</code> nunca são executados e só o <code>say</code> chega ao parceiro, mas eles ficam na <code>action_list</code> de quem os escreveu e aparecem no estado do parceiro como se fossem plano dessa pessoa. Quando o parceiro responde, o <code>plan</code> da resposta dele também entra na fila dele. ▸ marca a ação que o parser escolhe. <code>llm_call</code> abre o input e o output brutos da chamada.</span></div>
+        <div class="thread" id="thread"></div>
+      </div>
+      <div id="extras" class="events"></div>
+    </div>
+  </div>
+</div>
+
+<script id="data" type="application/json">/*__DATA__*/null</script>
+<script>
+(function () {
+  const DATA = JSON.parse(document.getElementById('data').textContent) || { episodes: [], recipes: {} };
+  const ROLE = ['Chef', 'Assistant'];
+  const CLS = ['chef', 'asst'];
+  const OWNER = { P: 0, O: 0, S: 0, I: 1, C: 1, D: 1, B: 1 };
+  const TERRAIN = { X: 'balcão', P: 'panela', O: 'forno', S: 'entrega', I: 'ingred.', C: 'tábua', D: 'pratos', B: 'blender' };
+  const ARROW = { '↑': 'up', '↓': 'down', '←': 'left', '→': 'right' };
+
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  // Normalise a raw experiment_*.json (same shape as the build script output).
+  function slim(raw, file, model) {
+    const ticks = (raw.content || []).map((c) => {
+      const sd = c.statistical_data || {}; const cc = c.content || {};
+      return {
+        t: c.timestamp, map: c.map || '', actions: c.actions || [], queue: cc.action_list || [[], []],
+        obs: cc.observation || ['', ''], calls: cc.content || [[], []],
+        comm: (sd.communication || []).map((x) => (x && x.call ? x.turn || [] : [])),
+        errors: (sd.error || []).map((x) => [].concat(x.validator_error.error_message || [], x.format_error.error_message || [])),
+        score: sd.score || 0,
+      };
+    });
+    return { file, model, order: (raw.content && raw.content[0] && raw.content[0].order_list[0]) || '',
+      total_score: raw.total_score, finished: raw.total_order_finished || [], done: raw.total_action_list || [[], []], ticks };
+  }
+
+  function prepare(ep) {
+    // item names: map first letter -> full names seen in prompts and plans
+    // observation entries are a string when the LLM was called, otherwise often an empty list
+    ep.ticks.forEach((tk) => {
+      tk.obs = (tk.obs || []).map((o) => (Array.isArray(o) ? o.join('\n') : String(o || '')));
+      tk.calls = (tk.calls || []).map((l) => (Array.isArray(l) ? l.filter((c) => c && typeof c === 'object') : []));
+    });
+    const names = {};
+    const add = (n) => { if (!n || n === 'nothing') return; const k = n[0]; (names[k] = names[k] || new Set()).add(n); };
+    ep.ticks.forEach((tk) => {
+      tk.obs.forEach((o) => {
+        (o.match(/holds one (\w+)/g) || []).forEach((m) => add(m.slice(9)));
+        (o.match(/counters have (\w+)/g) || []).forEach((m) => add(m.slice(14)));
+      });
+      tk.calls.flat().forEach((c) => ((c.plan || '').match(/pickup\((\w+)/g) || []).forEach((m) => add(m.slice(7))));
+    });
+    add('dish');
+    ep.letters = names;
+    ep.agentCalls = (tk, i) => tk.calls.flat().filter((c) => c.agent === i);
+    ep.deliveredAt = (ep.ticks.find((tk) => tk.score > 0) || {}).t;
+    return ep;
+  }
+
+  function itemName(ep, letter) {
+    const s = ep.letters[letter];
+    if (s && s.size === 1) return [...s][0];
+    if (s) return [...s].join('/');
+    return letter;
+  }
+
+  function parseMap(str) {
+    return str.split('\n\n').filter((r) => r.trim()).map((row) => {
+      const cells = [];
+      for (let i = 0; i < row.length; i += 8) cells.push(row.slice(i, i + 8).trim());
+      return cells;
+    });
+  }
+
+  function holdsFromObs(obs, role) {
+    const m = obs.match(new RegExp('<' + role + '> holds ([^.]*)\\.'));
+    if (!m) return null;
+    return m[1] === 'nothing' ? 'nada' : m[1].replace(/^one /, '');
+  }
+
+  function cleanPlan(p) {
+    return String(p || '').replace(/^\s*(Chef|Assistant) plan:\s*/i, '').split(';').map((s) => s.trim()).filter(Boolean);
+  }
+
+  function chip(a, cls) {
+    const isReq = /^request\(/.test(a);
+    const title = isReq ? 'request(...) nunca executa; fica na fila de quem escreveu e aparece no estado do parceiro' : a;
+    return '<span class="chip ' + (cls || '') + (isReq ? ' req' : '') + '" title="' + esc(title) + '">' + esc(a) + '</span>';
+  }
+
+  let episodes = DATA.episodes.map((e) => prepare(e.ticks ? e : slim(e.raw, e.file, e.model)));
+  let ep = null, cur = 0, timer = null;
+
+  function epLabel(e) {
+    const m = e.file.match(/(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})/);
+    const when = m ? m[1] + ' ' + m[2] + ':' + m[3] : e.file;
+    const res = e.deliveredAt != null ? 'entregue' : 'falhou';
+    return e.model + ' · ' + e.order + ' · ' + when + ' · ' + res;
+  }
+
+  function fillPicker(selectIdx) {
+    $('ep').innerHTML = episodes.map((e, i) => '<option value="' + i + '">' + esc(epLabel(e)) + '</option>').join('');
+    if (selectIdx != null) $('ep').value = String(selectIdx);
+  }
+
+  function renderTask() {
+    const r = DATA.recipes[ep.order];
+    $('title').textContent = ep.order.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()) + (r ? ' · nível ' + r.level : '');
+    $('recipe').textContent = r ? r.text : 'Receita não encontrada para "' + ep.order + '".';
+    const ok = ep.deliveredAt != null;
+    const out = $('outcome');
+    out.className = 'pill ' + (ok ? 'good' : 'bad');
+    out.textContent = ok ? '★ Entregue no tick ' + ep.deliveredAt : 'Não entregue em ' + ep.ticks.length + ' ticks';
+    const calls = [0, 1].map((i) => ep.ticks.reduce((n, tk) => n + ep.agentCalls(tk, i).length, 0));
+    const msgs = [0, 1].map((i) => ep.ticks.reduce((n, tk) => n + ep.agentCalls(tk, i).filter((c) => c.say && !/^\s*\[NOTHING\]\s*$/i.test(c.say)).length, 0));
+    const errs = [0, 1].map((i) => ep.ticks.reduce((n, tk) => n + ((tk.errors[i] || []).length), 0));
+    $('stats').innerHTML = [
+      ['total_timestamp', ep.ticks.length + ' ticks'],
+      ['total_score', ep.total_score],
+      ['chamadas ao LLM', 'Chef ' + calls[0] + ' · Asst ' + calls[1]],
+      ['say ≠ [NOTHING]', 'Chef ' + msgs[0] + ' · Asst ' + msgs[1]],
+      ['validator/format errors', 'Chef ' + errs[0] + ' · Asst ' + errs[1]],
+      ['model', esc(ep.model)],
+    ].map(([k, v]) => '<dt>' + k + '</dt><dd>' + v + '</dd>').join('');
+    const ref = r && r.ref ? r.ref[Object.keys(r.ref)[0]] : null;
+    $('refs').innerHTML = ref ? [0, 1].map((i) => '<div><div class="who ' + CLS[i] + '">' + ROLE[i] + '</div><ol>' +
+      (ref['agent_' + i] || []).map((a) => '<li>' + esc(a) + '</li>').join('') + '</ol></div>').join('') +
+      (Object.keys(r.ref).length > 1 ? '<p class="muted" style="grid-column:1/-1;font-size:.8rem">+' + (Object.keys(r.ref).length - 1) + ' trajetória(s) alternativa(s) no arquivo de referência.</p>' : '')
+      : '<p class="muted">Sem trajetória de referência.</p>';
+  }
+
+  function renderTimeline() {
+    const N = ep.ticks.length;
+    const tl = $('tl');
+    tl.style.gridTemplateColumns = 'max-content repeat(' + N + ', 46px)';
+    tl.style.gridTemplateRows = 'auto 34px 20px 34px 20px';
+    let h = '<div class="tl-label small" style="grid-row:1;grid-column:1">tick</div>';
+    h += '<div class="tl-sel" id="tlSel" style="grid-row:1/6"></div>';
+    for (let t = 0; t < N; t++) {
+      h += '<div class="tl-num" style="grid-row:1;grid-column:' + (t + 2) + '">' + ep.ticks[t].t + '</div>';
+      h += '<button class="tl-hit" type="button" data-t="' + t + '" aria-label="Tick ' + ep.ticks[t].t + '" style="grid-row:2/6;grid-column:' + (t + 2) + '"></button>';
+    }
+    [0, 1].forEach((i) => {
+      const rowBar = 2 + i * 2, rowEv = rowBar + 1;
+      h += '<div class="tl-label ' + CLS[i] + '" style="grid-row:' + rowBar + ';grid-column:1">' + ROLE[i] + '</div>';
+      h += '<div class="tl-label small" style="grid-row:' + rowEv + ';grid-column:1">eventos</div>';
+      let start = 0;
+      for (let t = 1; t <= N; t++) {
+        const a = (ep.ticks[start].actions[i] || '').trim();
+        if (t === N || (ep.ticks[t].actions[i] || '').trim() !== a) {
+          const wait = /^wait/.test(a);
+          h += '<div class="tl-bar ' + CLS[i] + (wait ? ' wait' : '') + '" title="' + esc(a) + '" style="grid-row:' + rowBar + ';grid-column:' + (start + 2) + '/' + (t + 2) + '">' + esc(a) + '</div>';
+          start = t;
+        }
+      }
+      for (let t = 0; t < N; t++) {
+        const tk = ep.ticks[t];
+        const calls = ep.agentCalls(tk, i);
+        const said = calls.filter((c) => c.say && !/^\s*\[NOTHING\]\s*$/i.test(c.say)).length;
+        const done = (ep.done[i] || []).filter((d) => d.timestamp === tk.t).length;
+        const err = (tk.errors[i] || []).length;
+        let ev = '';
+        if (calls.length) ev += '<span class="ev-call" title="' + calls.length + ' chamada(s) ao LLM">●' + (calls.length > 1 ? calls.length : '') + '</span>';
+        if (said) ev += '<span class="ev-say">◆</span>';
+        if (done) ev += '<span class="ev-done">✓</span>';
+        if (err) ev += '<span class="ev-err">✕</span>';
+        if (i === 0 && tk.score > 0) ev += '<span class="ev-star">★</span>';
+        if (ev) h += '<div class="tl-ev" style="grid-row:' + rowEv + ';grid-column:' + (t + 2) + '">' + ev + '</div>';
+      }
+    });
+    tl.innerHTML = h;
+    tl.querySelectorAll('.tl-hit').forEach((b) => b.addEventListener('click', () => { stop(); go(+b.dataset.t); }));
+  }
+
+  function renderKitchen(tk) {
+    const grid = parseMap(tk.map);
+    const k = $('kitchen');
+    const cols = Math.max(...grid.map((r) => r.length), 1);
+    k.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
+    const holding = [null, null];
+    let h = '';
+    grid.forEach((row) => row.forEach((cell) => {
+      if (!cell) { h += '<div class="kc"></div>'; return; }
+      if (ARROW[cell[0]] && /\d/.test(cell[1])) {
+        const idx = +cell[1];
+        const obsHold = holdsFromObs(tk.obs.join('\n'), ROLE[idx]);
+        const letter = cell.slice(2);
+        const item = obsHold && obsHold !== 'nada' ? obsHold : (letter ? itemName(ep, letter) : '');
+        holding[idx] = item || 'nada';
+        h += '<div class="kc player"><div class="tok ' + CLS[idx] + '">' + (idx === 0 ? 'Chef' : 'Asst') +
+          '<span class="arrow ' + ARROW[cell[0]] + '">' + cell[0] + '</span></div>' + (item ? '<span class="item">' + esc(item) + '</span>' : '') + '</div>';
+        return;
+      }
+      let base = cell[0], rest = cell.slice(1), label, extra = '';
+      if (base === 'o') {
+        base = 'P';
+        label = TERRAIN.P;
+        extra = rest === '-' ? 'com comida' : rest === '=' ? '2 itens' : /\d/.test(rest) ? 'cozinhando ' + rest + '/3' : rest;
+      } else {
+        label = TERRAIN[base] || base;
+        if (rest) extra = base === 'X' ? itemName(ep, rest) : rest;
+      }
+      const own = OWNER[base];
+      const cls = base === 'X' ? 'counter' : own === 0 ? 'own-chef' : own === 1 ? 'own-asst' : '';
+      h += '<div class="kc ' + cls + '"><span><span class="big">' + esc(base) + '</span>' + esc(label) + (extra ? '<span class="item">' + esc(extra) + '</span>' : '') + '</span></div>';
+    }));
+    k.innerHTML = h;
+    const pot = (tk.map.match(/\so([-=\d])/) || [])[1];
+    $('state').innerHTML = [0, 1].map((i) => '<div><span class="who ' + CLS[i] + '">' + ROLE[i] + '</span><span>segura <b>' + esc(holding[i] || '?') + '</b></span></div>').join('') +
+      '<div><span class="muted">Panela</span><span>' + (pot == null ? 'vazia' : pot === '-' ? 'com comida, sem cozinhar' : /\d/.test(pot) ? 'cozinhando, ' + pot + '/3' : pot) + '</span></div>';
+  }
+
+  function renderAgents(tk) {
+    $('agents').innerHTML = [0, 1].map((i) => {
+      const now = (tk.actions[i] || '').trim();
+      const q = (tk.queue[i] || []).map((s) => s.trim()).filter(Boolean);
+      const rest = q[0] === now ? q.slice(1) : q;
+      const done = (ep.done[i] || []).filter((d) => d.timestamp === tk.t).map((d) => d.action);
+      const calls = ep.agentCalls(tk, i).length;
+      return '<div class="agent-card ' + CLS[i] + '"><div class="who ' + CLS[i] + '">' + ROLE[i] +
+        ' <span class="muted mono" style="font-weight:400;font-size:.75rem">' + (calls ? calls + ' chamada(s) ao LLM' : 'sem chamada ao LLM') + '</span></div>' +
+        '<div class="kv"><span class="k">actions · executando</span><div class="chips">' + (now ? chip(now, 'now') : '<span class="muted">nada</span>') + '</div></div>' +
+        '<div class="kv"><span class="k">action_list · fila</span><div class="chips">' + (rest.length ? rest.map((a) => chip(a)).join('') : '<span class="muted">vazia</span>') + '</div></div>' +
+        (done.length ? '<div class="kv"><span class="k">total_action_list · concluída (já visível neste estado)</span><div class="chips">' + done.map((a) => chip('✓ ' + a, 'done')).join('') + '</div></div>' : '') +
+        '</div>';
+    }).join('');
+  }
+
+  function renderThread(tk) {
+    const calls = tk.calls.flat();
+    if (!calls.length) {
+      $('thread').innerHTML = '<p class="empty">Nenhuma chamada ao LLM neste tick. Os dois só avançam na ação em curso.</p>';
+      return;
+    }
+    const open = $('thread').dataset.open === '1';
+    const raw = matchRaw(tk, calls);
+    $('thread').innerHTML = calls.map((c, n) => {
+      const i = c.agent === 1 ? 1 : 0;
+      const say = String(c.say || '').trim();
+      const silent = !say || /^\[NOTHING\]$/i.test(say);
+      const ends = /\[END\]/.test(say);
+      const plan = cleanPlan(c.plan);
+      const picked = plan.find((a) => !/request|accept|deny|clarify/i.test(a)) || null;
+      return '<div class="call ' + CLS[i] + '"><div class="avatar ' + CLS[i] + '">' + (i ? 'A' : 'C') + '</div><div class="call-body">' +
+        '<div class="call-head"><span class="who ' + CLS[i] + '">' + ROLE[i] + '</span><span class="muted mono">chamada ' + (n + 1) + ' de ' + calls.length + '</span>' + (ends ? '<span class="chip">[END] · encerra a conversa</span>' : '') + '</div>' +
+        (c.analysis ? '<details' + (open ? ' open' : '') + '><summary><code>analysis</code></summary><div class="analysis">' + esc(c.analysis) + '</div></details>' : '') +
+        '<div class="kv"><span class="k">plan</span><div class="chips">' + (plan.length ? plan.map((a) => chip(a, a === picked ? 'pick' : '')).join('') : '<span class="muted">vazio</span>') + '</div></div>' +
+        '<div class="kv"><span class="k">say</span>' + (silent ? '<p class="say none">[NOTHING]</p>' : '<p class="say">“' + esc(say.replace(/\s*\[END\]\s*/g, ' ').trim()) + '”</p>') + '</div>' +
+        raw.out[n].extra.map((r) => rawCallHtml(r, 'llm_call</code> · correção antes desta resposta')).join('') +
+        (raw.out[n].main ? rawCallHtml(raw.out[n].main, 'llm_call</code> · input e output brutos') : '') +
+        '</div></div>';
+    }).join('') +
+      raw.leftover.map((r) => rawCallHtml(r, 'llm_call</code> · ' + esc(r.agent || '?') + ', sem resposta correspondente em content')).join('') +
+      (ep.llm ? '' : '<p class="muted" style="font-size:.82rem">Sem <code>llm_calls_*.jsonl</code> para este episódio: ele rodou antes do log bruto existir.</p>');
+  }
+
+  function renderExtras(tk) {
+    let h = '';
+    [0, 1].forEach((i) => (tk.errors[i] || []).forEach((m) => {
+      h += '<div class="err"><b>validator_error · ' + ROLE[i] + '</b><span>' + esc(m.trim()) + '</span><span style="opacity:.8;font-size:.82rem">A ação foi rejeitada antes de executar. O erro volta para o LLM como "lição", e ele replaneja uma vez. Se errar de novo, faz wait(1).</span></div>';
+    }));
+    if (tk.score > 0) h += '<div class="reward">★ Pedido entregue neste tick: +' + tk.score + ' pontos</div>';
+    [0, 1].forEach((i) => {
+      if (tk.obs[i]) h += '<details class="panel"><summary><code>observation</code> · prompt de estado que o ' + ROLE[i] + ' recebeu neste tick</summary><div class="prompt">' + esc(tk.obs[i]) + '</div></details>';
+    });
+    $('extras').innerHTML = h;
+  }
+
+  // Pair each content entry with the raw call whose response it was parsed from.
+  // Raw calls that match no entry (format/validator corrections) go to the next entry of the same agent.
+  function matchRaw(tk, calls) {
+    const out = calls.map(() => ({ main: null, extra: [] }));
+    const leftover = [];
+    if (!ep.llm) return { out, leftover };
+    const norm = (x) => String(x || '').replace(/\s+/g, ' ').trim();
+    const recs = ep.llm.filter((r) => r.timestep === tk.t);
+    let k = 0;
+    const pending = [];
+    recs.forEach((r) => {
+      const resp = norm(r.response);
+      let hit = -1;
+      for (let n = k; n < calls.length; n++) {
+        const c = calls[n];
+        if (ROLE[c.agent === 1 ? 1 : 0] !== r.agent) continue;
+        const a = norm(c.analysis).slice(0, 80), pl = norm(c.plan).slice(0, 60);
+        if (resp && ((a && resp.includes(a)) || (pl && resp.includes(pl)))) { hit = n; break; }
+      }
+      if (hit < 0) { pending.push(r); return; }
+      out[hit].main = r;
+      for (let j = pending.length - 1; j >= 0; j--) {
+        if (pending[j].agent === r.agent) out[hit].extra.unshift(pending.splice(j, 1)[0]);
+      }
+      k = hit + 1;
+    });
+    return { out, leftover: leftover.concat(pending) };
+  }
+
+  function rawCallHtml(r, label) {
+    const resp = r.response == null ? '' : String(r.response);
+    const msgs = (r.messages || []).map((m) => {
+      const content = String(m.content || '');
+      const cut = content.indexOf('<input>');
+      if (m.role === 'user' && cut > 0) {
+        return '<div class="raw-msg"><span class="k">messages[' + esc(m.role) + '] · ' + content.length + ' caracteres</span>' +
+          '<details><summary>prompt fixo: regras, skills, receita (' + cut + ' caracteres)</summary><div class="prompt">' + esc(content.slice(0, cut)) + '</div></details>' +
+          '<div class="prompt">' + esc(content.slice(cut)) + '</div></div>';
+      }
+      return '<div class="raw-msg"><span class="k">messages[' + esc(m.role) + ']</span><div class="prompt">' + esc(content) + '</div></div>';
+    }).join('');
+    const meta = esc(r.model) + ' · temperature ' + esc(r.temperature) + (r.trace === false ? ' · trace=false' : '') + (r.rethink ? ' · rethink' : '');
+    return '<details class="raw-inline"><summary><code>' + label + '</summary><div class="raw-body"><span class="muted mono" style="font-size:.74rem">' + meta + '</span>' + msgs +
+      '<div class="raw-msg"><span class="k">response</span>' + (r.error ? '<div class="err">' + esc(r.error) + '</div>' : '<div class="prompt">' + esc(resp) + '</div>') + '</div></div></details>';
+  }
+
+  function go(t) {
+    if (!ep || !ep.ticks.length) return;
+    cur = Math.max(0, Math.min(ep.ticks.length - 1, t));
+    const tk = ep.ticks[cur];
+    $('tickName').textContent = 'Tick ' + tk.t + ' / ' + (ep.ticks.length - 1);
+    $('slider').value = String(cur);
+    const sel = $('tlSel');
+    if (sel) sel.style.gridColumn = (cur + 2) + '/' + (cur + 3);
+    const hit = document.querySelector('.tl-hit[data-t="' + cur + '"]');
+    if (hit && hit.scrollIntoView) {
+      const wrap = document.querySelector('.tl-wrap');
+      const x = hit.offsetLeft - wrap.clientWidth / 2;
+      wrap.scrollTo({ left: Math.max(0, x), behavior: 'smooth' });
+    }
+    renderKitchen(tk); renderAgents(tk); renderThread(tk); renderExtras(tk);
+  }
+
+  function load(idx) {
+    stop();
+    ep = episodes[idx];
+    if (!ep) return;
+    $('slider').max = String(Math.max(0, ep.ticks.length - 1));
+    renderTask(); renderTimeline();
+    const first = ep.ticks.findIndex((tk) => tk.calls.flat().length);
+    go(first < 0 ? 0 : first);
+  }
+
+  function stop() { if (timer) { clearInterval(timer); timer = null; $('play').textContent = 'Reproduzir'; } }
+  $('play').addEventListener('click', () => {
+    if (timer) return stop();
+    if (cur >= ep.ticks.length - 1) go(0);
+    $('play').textContent = 'Pausar';
+    timer = setInterval(() => { if (cur >= ep.ticks.length - 1) stop(); else go(cur + 1); }, 1200);
+  });
+  $('prev').addEventListener('click', () => { stop(); go(cur - 1); });
+  $('next').addEventListener('click', () => { stop(); go(cur + 1); });
+  $('slider').addEventListener('input', (e) => { stop(); go(+e.target.value); });
+  $('ep').addEventListener('change', (e) => load(+e.target.value));
+  document.addEventListener('keydown', (e) => {
+    if (/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
+    if (e.key === 'ArrowLeft') { stop(); go(cur - 1); }
+    if (e.key === 'ArrowRight') { stop(); go(cur + 1); }
+  });
+  $('open').addEventListener('click', () => $('file').click());
+  $('file').addEventListener('change', async (e) => {
+    const files = [...e.target.files];
+    let firstNew = null;
+    const failed = [];
+    const stem = (name) => name.replace(/^(experiment|llm_calls)_/, '').replace(/\.jsonl?$/, '');
+    files.sort((a, b) => (a.name.endsWith('.jsonl') ? 1 : 0) - (b.name.endsWith('.jsonl') ? 1 : 0));
+    for (const f of files) {
+      if (f.name.endsWith('.jsonl')) {
+        try {
+          const recs = (await f.text()).split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+          const target = episodes.find((x) => stem(x.file) === stem(f.name)) || ep;
+          if (!target) throw new Error('nenhum episódio aberto');
+          target.llm = recs; target.llmFile = f.name;
+          if (firstNew == null) firstNew = episodes.indexOf(target);
+        } catch (err) {
+          failed.push(f.name);
+          console.warn('Não consegui ler ' + f.name + ': ' + err.message);
+        }
+        continue;
+      }
+      try {
+        const raw = JSON.parse(await f.text());
+        if (!raw.content) throw new Error('sem campo "content"');
+        const parent = (f.webkitRelativePath || '').split('/').slice(-3, -2)[0];
+        episodes.push(prepare(slim(raw, f.name, parent || 'arquivo local')));
+        if (firstNew == null) firstNew = episodes.length - 1;
+      } catch (err) {
+        failed.push(f.name);
+        console.warn('Não consegui ler ' + f.name + ': ' + err.message);
+      }
+    }
+    const msg = $('loadMsg');
+    msg.hidden = !failed.length;
+    msg.textContent = failed.length ? 'Não consegui ler ' + failed.join(', ') + ': o arquivo precisa ser um experiment_*.json ou llm_calls_*.jsonl do main.py.' : '';
+    if (firstNew != null) { fillPicker(firstNew); load(firstNew); }
+    e.target.value = '';
+  });
+
+  const best = Math.max(0, episodes.findIndex((e) => e.model === 'gpt-4o' && e.file.indexOf('2026-10-26') >= 0));
+  fillPicker(best);
+  if (episodes.length) load(best);
+})();
+</script>
