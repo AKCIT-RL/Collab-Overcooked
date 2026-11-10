@@ -467,6 +467,7 @@ class OvercookedGridworld(object):
                  layout_name="unnamed_layout",
                  old_dynamics=False, 
                  need_dish={},
+                 fixed_orders=False,
                  **kwargs
                  ):
         """
@@ -477,6 +478,9 @@ class OvercookedGridworld(object):
         cook_time: amount of timesteps required for a soup to cook
         delivery_reward: amount of reward given per delivery
         rew_shaping_params: reward given for completion of specific subgoals
+        fixed_orders: the order list is never refilled: it only shrinks with each
+            delivery, and the episode ends (is_terminal) once it is empty. Off by
+            default: the list is topped up from order_probability, as before.
         """
         # self._configure_recipes(start_all_orders, num_items_for_soup, **kwargs)
         # self.start_all_orders = (
@@ -495,7 +499,9 @@ class OvercookedGridworld(object):
         self.start_all_orders = start_all_orders
         self.start_order_list = start_order_list
         self.order_probability = order_probability
-        self.start_order_list = self.add_elements_based_on_probability(start_order_list, order_probability)
+        self.fixed_orders = bool(fixed_orders)
+        if not self.fixed_orders:
+            self.start_order_list = self.add_elements_based_on_probability(start_order_list, order_probability)
         if old_dynamics:
             assert all(
                 [
@@ -637,6 +643,9 @@ class OvercookedGridworld(object):
         for k, v in params_to_overwrite.items():   
             if k == 'start_bonus_orders': 
                 continue 
+            if k == 'fixed_orders':  # not a layout key: passed to the constructor
+                mdp_config[k] = v
+                continue
             try: 
                 curr_val = mdp_config[k]
                 if debug:
@@ -1269,18 +1278,20 @@ class OvercookedGridworld(object):
         current_order = state.order_list[0]
         if current_order == 'any' or soup_type == current_order:
             if (soup_type in self.Recipe.recipe_need_dish) and soup_obj.catagory == 'with_dish':
-                state.order_list = state.order_list[1:]
-                if len(state.order_list) <= state.k_order:
-                    state.order_list = self.add_elements_based_on_probability(state.order_list, self.order_probability)
+                self._pop_order(state)
                 return state, self.delivery_reward
             elif soup_type not in self.Recipe.recipe_need_dish and soup_obj.catagory != 'with_dish':
-                state.order_list = state.order_list[1:]
-                if len(state.order_list) <= state.k_order:
-                    state.order_list = self.add_elements_based_on_probability(state.order_list, self.order_probability)
+                self._pop_order(state)
                 return state, self.delivery_reward
 
         
         return state, 0
+
+    def _pop_order(self, state):
+        """Drop the delivered order; refill the list unless the orders are fixed."""
+        state.order_list = state.order_list[1:]
+        if not getattr(self, "fixed_orders", False) and len(state.order_list) <= state.k_order:
+            state.order_list = self.add_elements_based_on_probability(state.order_list, self.order_probability)
 
     def match_recipe(self, soup_obj, utensil_name):
         soup_type, _, _ = soup_obj.state
