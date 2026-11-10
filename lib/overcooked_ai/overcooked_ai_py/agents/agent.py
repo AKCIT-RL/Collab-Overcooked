@@ -59,9 +59,13 @@ class AgentGroup(object):
             a.set_mdp(mdp)
 
     def reset(self):
+        # each agent's teammate: the other one of a pair; with more agents, the next
+        # one in turn, and every other agent in ``teammates`` when the agent keeps it
         for a in self.agents:
             index = a.agent_index
-            a.reset(self.agents[1-index])
+            a.reset(self.agents[(index + 1) % self.n])
+            if hasattr(a, "set_teammates"):
+                a.set_teammates([b for b in self.agents if b is not a])
     def reset_dialogue(self):
         dialogue = []
         for a in self.agents:

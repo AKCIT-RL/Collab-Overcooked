@@ -6,6 +6,7 @@ from functools import reduce
 from collections import defaultdict, Counter
 from overcooked_ai_py.utils import pos_distance, load_from_json, OvercookedException, classproperty
 from overcooked_ai_py.data.layouts import read_layout_dict
+from overcooked_ai_py.mdp.roles import layout_agents
 from overcooked_ai_py.mdp.actions import Action, Direction
 
 FULL = 1
@@ -214,7 +215,7 @@ class OvercookedState(object):
         self.objects = objects
         self.order_list = order_list
         self.timestep = timestep # The current timestep of the state
-        self.ml_actions = [None, None] # I add to restore the ml_actions in t-1
+        self.ml_actions = [None] * len(self.players) # I add to restore the ml_actions in t-1
         self.communicate_history = []
         self.error_message = []
 
@@ -518,13 +519,32 @@ class OvercookedGridworld(object):
         self.reward_shaping_params = NO_REW_SHAPING_PARAMS if rew_shaping_params is None else rew_shaping_params
         self.layout_name = layout_name
         self.interact_actions = {}
-        self.utensil_list_chef = []
-        self.utensil_list_assist = []
+        # cook roles per player (mdp/roles.py); legacy: the original utensil_agent0/1
+        self.agents_spec, self.legacy_agents = layout_agents(
+            dict(kwargs, utensils=utensils), self.num_players
+        )
+        # utensils each player can reach, filled by the game's agents on first use
+        self.utensil_lists = [[] for _ in range(self.num_players)]
+        self.utensil_lists_built = False
         self.utensil_list = self.generate_utensil_list()
         self.init_utensil_states()
         self.all_ingredients = self.Recipe.recipe_name+self.default_ingredients
         self.one_task_mode = False
 
+
+    @property
+    def utensil_list_chef(self):
+        """Utensils player 0 reaches (the Chef of the two-player layouts)."""
+        return self.utensil_lists[0]
+
+    @property
+    def utensil_list_assist(self):
+        """Utensils player 1 reaches (the Assistant of the two-player layouts)."""
+        return self.utensil_lists[1]
+
+    @property
+    def agent_roles(self):
+        return [a["role"] for a in self.agents_spec]
 
     def generate_utensil_list(self):
         utensil_list = []
@@ -1072,7 +1092,7 @@ class OvercookedGridworld(object):
         # cooking_pots = ready_pots + pot_states["tomato"]["cooking"] + pot_states["onion"]["cooking"]
         # nearly_ready_pots = cooking_pots + pot_states["tomato"]["partially_full"] + pot_states["onion"]["partially_full"]
 
-        sparse_reward, shaped_reward, ml_actions = 0, 0, [None, None]
+        sparse_reward, shaped_reward, ml_actions = 0, 0, [None] * len(new_state.players)
         for i, (player, action) in enumerate(zip(new_state.players, joint_action)):
             if action != Action.INTERACT:
                 continue

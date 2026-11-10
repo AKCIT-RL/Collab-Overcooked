@@ -42,6 +42,14 @@ def get_visitable_positions(player, mdp):
     
     return visited 
 
+def visitable_by_others(player_positions, player_index, mdp):
+    """Positions any other player can visit (the teammate's, with two players)."""
+    visited = []
+    for index, player in enumerate(player_positions):
+        if index != player_index:
+            visited.extend(get_visitable_positions(player, mdp))
+    return visited
+
 def query_counter_states(mdp, state): 
     # mdp.get_counter_objects_dict(state)
     obj_dict   = mdp.get_counter_objects_dict(state)    
@@ -122,7 +130,10 @@ def find_path(start_pos_and_or, other_pos_and_or, goal, terrain_mtx):
     n_cols = terrain_mtx['width']    
     mtx = terrain_mtx['matrix'] 
 
-    mtx[other_pos_and_or[0][1]][other_pos_and_or[0][0]] = 'B' 
+    # other_pos_and_or: the teammate's (pos, or), or a list of them with more players
+    others = other_pos_and_or if isinstance(other_pos_and_or, list) else [other_pos_and_or]
+    for other in others:
+        mtx[other[0][1]][other[0][0]] = 'B'
 
     yet_to_visit_list.append(start_node)   
 
