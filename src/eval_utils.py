@@ -1,6 +1,7 @@
 from overcooked_ai_py.utils import load_dict_from_file
 from overcooked_ai_py.data.layouts import LAYOUTS_DIR, read_layout_dict
 from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
+from overcooked_ai_py.mdp.subtasks import completed_subtasks, subtasks
 from rich import print as rprint
 import re
 import time
@@ -241,6 +242,60 @@ class Reference:
     @property
     def get_reference_encoded_seq(self):
         return self.reference_encoded
+
+
+def team_summary(log, layout_name="new_env"):
+    """An episode log of any number of cooks -> binary success, completed subtasks
+    and ticks. The reference trajectories (and the similarity / redundancy metrics
+    built on them) exist only for the two-cook kitchen; subtasks come from the recipe
+    (overcooked_ai_py.mdp.subtasks), so they apply to every layout."""
+    layout = read_layout_dict(log.get("layout", layout_name))
+    order = (log.get("content") or [{}])[0].get("order_list", [None])[0]
+    order = log.get("order") or order
+    success = bool(log["total_order_finished"])
+    actions = [e["action"] for cook in log["total_action_list"] for e in cook]
+    total = subtasks(layout["recipes"], order)
+    done = completed_subtasks(layout["recipes"], order, actions, delivered=success)
+    return {
+        "order": order,
+        "cooks": len(log["total_action_list"]),
+        "success": success,
+        "subtasks_total": len(total),
+        "subtasks_done": len(done),
+        "subtasks": done,
+        "ticks": len(log["total_timestamp"]),
+        "actions_per_cook": [len(cook) for cook in log["total_action_list"]],
+    }
+
+
+def summarize_team_logs(log_dir, save_dir, layout_name="new_env"):
+    """team_summary for every experiment_*.json under log_dir -> save_dir/team_summary.json."""
+    rows = []
+    for name in sorted(os.listdir(log_dir)):
+        if name.startswith("experiment") and name.endswith(".json"):
+            with open(os.path.join(log_dir, name)) as fh:
+                rows.append(dict(team_summary(json.load(fh), layout_name), file=name))
+    n = len(rows) or 1
+    result = {
+        "episodes": len(rows),
+        "success_rate": sum(r["success"] for r in rows) / n,
+        "mean_subtask_share": sum(r["subtasks_done"] / r["subtasks_total"] for r in rows) / n,
+        "mean_ticks": sum(r["ticks"] for r in rows) / n,
+        "episodes_detail": rows,
+    }
+    os.makedirs(save_dir, exist_ok=True)
+    with open(os.path.join(save_dir, "team_summary.json"), "w") as fh:
+        json.dump(result, fh, indent=2)
+    return result
+
+
+def has_more_than_two_cooks(log_dir):
+    for name in os.listdir(log_dir):
+        if name.startswith("experiment") and name.endswith(".json"):
+            with open(os.path.join(log_dir, name)) as fh:
+                if len(json.load(fh)["total_action_list"]) > 2:
+                    return True
+    return False
 
 
 class ExpLog:
@@ -627,7 +682,9 @@ class Evaluation:
         # load utensil_operation
         layout = read_layout_dict(self.layout_name)
         utensil_list = self.mdp.generate_utensil_list()
-        for utensil, operation in layout["utensil_agent0"].items():
+        # the two cooks' utensils (mdp/roles.py; the original utensil_agent0/1)
+        agents = self.mdp.agents_spec
+        for utensil, operation in agents[0]["utensils"].items():
             for utensil_with_num in utensil_list:
                 if utensil in utensil_with_num:
                     action_space_agent_0.append(f"{operation}({utensil_with_num})")
@@ -638,7 +695,7 @@ class Evaluation:
                         f"fill_dish_with_food({utensil_with_num})"
                     )
                     pick_place_agent_0.append(utensil_with_num)
-        for utensil, operation in layout["utensil_agent1"].items():
+        for utensil, operation in agents[1]["utensils"].items():
             for utensil_with_num in utensil_list:
                 if utensil in utensil_with_num:
                     action_space_agent_1.append(f"{operation}({utensil_with_num})")
