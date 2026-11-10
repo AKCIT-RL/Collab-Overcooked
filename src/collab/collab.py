@@ -6,7 +6,7 @@ import pkg_resources
 from collections import deque
 import sys
 import copy
-from .modules import Module, statistics_dict, turn_statistics_dict
+from .modules import Module, statistics_dict, turn_statistics_dict, make_turn_statistics_dict
 from overcooked_ai_py.mdp.actions import Action, Direction
 from overcooked_ai_py.planning.search import find_path
 from overcooked_ai_py.planning.search import get_intersect_counter
@@ -18,6 +18,7 @@ import copy
 
 from rich import print as rprint
 from collab.modules import if_two_sentence_similar_meaning
+from collab import team_prompts
 
 cwd = os.getcwd()
 openai_key_file = os.path.join(cwd, "openai_key.txt")
@@ -122,7 +123,21 @@ class LLMAgents(LLMPair):
         self.action_wait_parse = queue.Queue()
         self.end_talk = False
         self.actor = actor
-        self.name = "Chef" if self.actor == "chef" else "Assistant"
+        # the layout's entry for this cook (mdp/roles.py); the two-player layouts
+        # give the original Chef and Assistant
+        self.spec = next(
+            (a for a in getattr(self.mdp, "agents_spec", []) if a["role"] == actor),
+            None,
+        )
+        if self.spec is not None:
+            self.name = self.spec["name"]
+        else:
+            self.name = "Chef" if self.actor == "chef" else "Assistant"
+        # prompt files this cook reads (prompts/gpt/<prompt_actor>_skill.txt)
+        self.prompt_actor = self.spec["prompts"] if self.spec else actor
+        self.has_recipe = self.spec["recipe"] if self.spec else actor == "chef"
+        self.teammates = []
+        self.own_ml_actions = []
         self.communication_role = "ask"
         self.recipe = {}
         self.order = ""
@@ -130,7 +145,7 @@ class LLMAgents(LLMPair):
         self.state = None
         # dict to record if the error in T timestamp  was corrected, or just 'wait(1)'
         self.error_correct = {}
-        turn_statistics_dict_cp = copy.deepcopy(turn_statistics_dict)
+        turn_statistics_dict_cp = make_turn_statistics_dict(self.mdp.num_players)
         self.turn_statistics_dict = turn_statistics_dict_cp
         # self.generate_layout_prompt()
 
@@ -182,12 +197,20 @@ class LLMAgents(LLMPair):
 
         with open(communication_rule_dir, "r") as g:
             communication_rule = g.read()
+            if self.many_teammates():
+                communication_rule += team_prompts.communication_note(
+                    self.spec, self.mdp.agents_spec
+                )
             prompt = prompt.replace("{communication_rule}", communication_rule)
             prompt = prompt.replace("{role}", self.name)
-            prompt = prompt.replace("{teammate}", self.teammate.name)
+            prompt = prompt.replace("{teammate}", self.teammate_label())
 
         with open(self.prompt_dir + "/environment_rule.txt", "r") as g:
             environment_rule = g.read()
+            if self.many_teammates():
+                environment_rule = team_prompts.environment_rule(
+                    self.spec, self.mdp.agents_spec
+                )
             environment_rule = environment_rule.replace("{role}", self.name)
             prompt = prompt.replace("{environment_rule}", environment_rule)
             character_player = "Suppose you are a player who is proficient in the overcooked_ai game. Your goal is to cooperate with your teammate who is also a LLM agent in order to get a high score."
@@ -197,8 +220,10 @@ class LLMAgents(LLMPair):
                 prompt = prompt.replace("{character}", character_reflection)
             else:
                 prompt = prompt.replace("{character}", character_player)
-        with open(self.prompt_dir + f"/{self.actor}_skill.txt", "r") as g:
+        with open(self.prompt_dir + f"/{self.prompt_actor}_skill.txt", "r") as g:
             skill = g.read()
+            if self.many_teammates():
+                skill = team_prompts.skill(self.spec, self.mdp.agents_spec)
             prompt = prompt.replace("{skill}", skill)
         chef_workflow = """- The usual workflow for the chef is:
   1. Read the cooking process from your recipe. All of your decisions must be strictly guided by the recipe and should not lead to unfounded behavior.
@@ -214,7 +239,9 @@ class LLMAgents(LLMPair):
         # load recipe
         recipe_content = ""
         # self.load_recipe()
-        if self.actor == "chef":
+        if self.many_teammates():
+            chef_workflow = assistant_workflow = team_prompts.workflow(self.spec)
+        if self.has_recipe:
             self.load_recipe()
             prompt = prompt.replace("{workflow}", chef_workflow)
             prompt = prompt.replace(
@@ -223,15 +250,16 @@ class LLMAgents(LLMPair):
             )
             # prompt = prompt.replace("{job}","You need to list plan only for yourself, and guide Assistant by telling him your instruction in communication.")
         else:
-            self.teammate.load_recipe()
+            chef = self.recipe_holder()
+            chef.load_recipe()
             prompt = prompt.replace("{workflow}", assistant_workflow)
             prompt = prompt.replace(
                 "{job}",
-                "You only need to ask and follow Chef's instruction in communication without making plan by yourself. Because you do not have recipe, which means your plan is likely to be wrong.",
+                f"You only need to ask and follow {chef.name}'s instruction in communication without making plan by yourself. Because you do not have recipe, which means your plan is likely to be wrong.",
             )
             prompt = prompt.replace(
                 "{has_recipe}",
-                "You do not have recipe, and you should always ask the chef for guidance, rather than making bad decisions on your own.",
+                f"You do not have recipe, and you should always ask the {chef.name.lower()} for guidance, rather than making bad decisions on your own.",
             )
         for key, value in self.recipe.items():
             recipe_content += value + "\n\n\n"
@@ -257,6 +285,50 @@ class LLMAgents(LLMPair):
         self.teammate_intentions_dict = {}
 
         self.teammate = teammate
+        self.teammates = [teammate]
+        self.own_ml_actions = []
+
+    def set_teammates(self, teammates):
+        """Every other cook of the team (AgentGroup); ``teammate`` stays the one this
+        cook talks with (the only one in a pair)."""
+        self.teammates = list(teammates)
+
+    def mates(self):
+        """Every teammate (the one teammate, in a pair)."""
+        return self.teammates or [self.teammate]
+
+    def many_teammates(self):
+        return len(self.teammates) > 1
+
+    def teammate_label(self):
+        return "Teammate" if self.many_teammates() else self.teammate.name
+
+    def recipe_holder(self):
+        """The cook who has the recipe (the Chef)."""
+        if self.has_recipe:
+            return self
+        holders = [t for t in self.teammates if t.has_recipe]
+        return holders[0] if holders else self.teammate
+
+    def dispenser_cooks(self):
+        """Lower-case names of the cooks who reach the ingredient dispenser."""
+        specs = getattr(self.mdp, "agents_spec", None) or []
+        return [
+            s["name"].lower() for s in specs if "ingredient_dispenser" in s["dispensers"]
+        ] or ["assistant"]
+
+    def reaches_dispensers(self):
+        if self.spec is None:
+            return self.actor == "assistant"
+        return "ingredient_dispenser" in self.spec["dispensers"]
+
+    def find_teammate(self, name):
+        """The teammate called ``name`` (its name or role, any case), or None."""
+        name = (name or "").strip().lower()
+        for t in self.teammates:
+            if name in (t.name.lower(), t.actor.lower()):
+                return t
+        return None
 
     def set_agent_index(self, agent_index):
         self.agent_index = agent_index
@@ -264,6 +336,8 @@ class LLMAgents(LLMPair):
             "planner", retrival_method=self.retrival_method, K=self.K
         )
         self.planner.name = self.name
+        self.planner.agent_index = agent_index
+        self.planner.has_recipe = self.has_recipe
         # self.explainer = self.create_gptmodule("explainer", retrival_method='recent_k', K=self.K)
 
         # print(self.planner.instruction_head_list[0]['content'])
@@ -272,6 +346,8 @@ class LLMAgents(LLMPair):
         return self.mdp.state_string(state).replace("ø", "o")
 
     def generate_layout_prompt(self):
+        if not getattr(self.mdp, "legacy_agents", True):
+            return self.generate_team_layout_prompt()
         layout_prompt = f"Chef space:"
         if self.name == "Chef":
             utensil_list_chef = self.mdp.utensil_list_chef
@@ -291,19 +367,27 @@ class LLMAgents(LLMPair):
 
         return layout_prompt
 
+    def generate_team_layout_prompt(self):
+        """Each cook's space, from the layout's roles (more than two cooks)."""
+        layout_prompt = ""
+        for index, spec in enumerate(self.mdp.agents_spec):
+            layout_prompt += f"{spec['name']} space:"
+            for u in self.mdp.utensil_lists[index]:
+                layout_prompt += u + "  "
+            for d in spec["dispensers"]:
+                layout_prompt += d + "  "
+            layout_prompt += "counter \n"
+        return layout_prompt
+
     def generate_state_prompt(self, state):
         self.layout_prompt = self.generate_layout_prompt()
         ego = state.players[self.agent_index]
-        teammate = state.players[1 - self.agent_index]
 
         time_prompt = f"Scene {state.timestep}: "
         ego_object = ego.held_object.name if ego.held_object else "nothing"
-        teammate_object = (
-            teammate.held_object.name if teammate.held_object else "nothing"
-        )
         ego_state_prompt = f"<{self.name}> holds "
 
-        chef = self if self.actor == "chef" else self.teammate
+        chef = self.recipe_holder()
         if ego_object in list(chef.recipe.keys()):
             ego_state_prompt += f"a dish with {ego_object} and needs to deliver soup.  "
         elif ego_object == "nothing":
@@ -320,29 +404,31 @@ class LLMAgents(LLMPair):
                 action_list += f";{a}"
         action_state_prompt = f"The planned sequence of actions (yet to be performed) for {self.name} is [{action_list}] "
 
-        teammate_state_prompt = f"<{self.teammate.name}> holds "
-        if teammate_object == "soup":
-            teammate_state_prompt += f"a dish with {teammate_object}. "
-        elif teammate_object == "nothing":
-            teammate_state_prompt += f"{teammate_object}. "
-        else:
-            teammate_state_prompt += f"one {teammate_object}. "
-
-        action_list = (
-            self.teammate.current_ml_action if self.teammate.current_ml_action else ""
-        )
-        actions = list(self.teammate.action_wait_parse.queue)
-        for index, a in enumerate(actions):
-            if index == 0 and self.teammate.current_ml_action is None:
-                action_list += f"{a}"
+        teammates_prompt = ""
+        for mate in self.mates():
+            teammate = state.players[mate.agent_index]
+            teammate_object = (
+                teammate.held_object.name if teammate.held_object else "nothing"
+            )
+            teammate_state_prompt = f"<{mate.name}> holds "
+            if teammate_object == "soup":
+                teammate_state_prompt += f"a dish with {teammate_object}. "
+            elif teammate_object == "nothing":
+                teammate_state_prompt += f"{teammate_object}. "
             else:
-                action_list += f";{a}"
-        teammate_action_state_prompt = f"The planned sequence of actions (yet to be performed) for {self.teammate.name} is [{action_list}] "
+                teammate_state_prompt += f"one {teammate_object}. "
 
-        if self.actor == "chef":
-            chef = self
-        else:
-            chef = self.teammate
+            action_list = mate.current_ml_action if mate.current_ml_action else ""
+            actions = list(mate.action_wait_parse.queue)
+            for index, a in enumerate(actions):
+                if index == 0 and mate.current_ml_action is None:
+                    action_list += f"{a}"
+                else:
+                    action_list += f";{a}"
+            teammate_action_state_prompt = f"The planned sequence of actions (yet to be performed) for {mate.name} is [{action_list}] "
+            teammates_prompt += teammate_state_prompt + teammate_action_state_prompt
+
+        chef = self.recipe_holder()
         order_prompt = (
             "Order:" + self.order
         )  # +("(Has recipe)"if self.order in chef.recipe.keys() else "(No recipe)")
@@ -449,12 +535,7 @@ class LLMAgents(LLMPair):
                             self.mdp.utensil_state_dict[utensil]["soup"].state[0]
                         ),
                     )
-        intersect_counters = get_intersect_counter(
-            state.players_pos_and_or[self.agent_index],
-            state.players_pos_and_or[1 - self.agent_index],
-            self.mdp,
-            self.mlam,
-        )
+        intersect_counters = self.shared_counters(state)
         counter_states = query_counter_states(self.mdp, state)
 
         kitchen_state_prompt += (
@@ -489,7 +570,13 @@ class LLMAgents(LLMPair):
             state.error_message[0] if len(state.error_message) > 0 else ""
         )
         # add failed history into state prompt:
-        long_term_memory_prompt = f"Successful Action History: {self.teammate.teammate_ml_actions if len(self.teammate.teammate_ml_actions)<=5 else self.teammate.teammate_ml_actions[-4:]}\n"
+        # this cook's own completed actions (its teammate records them, in a pair)
+        done = (
+            self.own_ml_actions
+            if self.many_teammates()
+            else self.teammate.teammate_ml_actions
+        )
+        long_term_memory_prompt = f"Successful Action History: {done if len(done)<=5 else done[-4:]}\n"
         reflection_memory = "Lessons from Past Failures\n"
         count = len(reflection_memory)
         temp_history = (
@@ -519,16 +606,37 @@ class LLMAgents(LLMPair):
             + time_prompt
             + ego_state_prompt
             + action_state_prompt
-            + teammate_state_prompt
-            + teammate_action_state_prompt
+            + teammates_prompt
             + kitchen_state_prompt
         )
 
+    def shared_counters(self, state, mates=None):
+        """Counters this cook shares with its teammate(s) (``mates``: only those)."""
+        mates = mates if mates is not None else self.mates()
+        if len(mates) == 1:
+            return get_intersect_counter(
+                state.players_pos_and_or[self.agent_index],
+                state.players_pos_and_or[mates[0].agent_index],
+                self.mdp,
+                self.mlam,
+            )
+        shared = []
+        for mate in mates:
+            for counter in get_intersect_counter(
+                state.players_pos_and_or[self.agent_index],
+                state.players_pos_and_or[mate.agent_index],
+                self.mdp,
+                self.mlam,
+            ):
+                if counter not in shared:
+                    shared.append(counter)
+        return shared
+
     def build_access_utensil(self, state):
         am = self.mlam
-        index_list = [0, 1]
-        if self.mdp.utensil_list_chef == [] or self.mdp.utensil_list_assist == []:
-            for i in index_list:
+        # once per episode: every player's reachable utensils (mdp.utensil_lists)
+        if not self.mdp.utensil_lists_built:
+            for i in range(len(state.players)):
                 player = state.players[i]
                 for utensil in self.mdp.utensil_list:
                     motion_goals = am.go_to_utensil_actions(state, utensil, i)
@@ -540,10 +648,8 @@ class LLMAgents(LLMPair):
                         )
                     ]
                     if len(motion_goals) > 0:
-                        if i == 0:
-                            self.mdp.utensil_list_chef.append(utensil)
-                        else:
-                            self.mdp.utensil_list_assist.append(utensil)
+                        self.mdp.utensil_lists[i].append(utensil)
+            self.mdp.utensil_lists_built = True
         else:
             return
 
@@ -556,7 +662,7 @@ class LLMAgents(LLMPair):
     def action(self, state):
         self.state = state
         self.build_access_utensil(state)
-        turn_statistics_dict_cp = copy.deepcopy(turn_statistics_dict)
+        turn_statistics_dict_cp = make_turn_statistics_dict(self.mdp.num_players)
         self.turn_statistics_dict = turn_statistics_dict_cp
         start_pos_and_or = state.players_pos_and_or[self.agent_index]
 
@@ -566,24 +672,46 @@ class LLMAgents(LLMPair):
         # and we here check this information and store it
         self.current_timestep = state.timestep
         self.planner.current_timestep = state.timestep
-        self.teammate.order = state.current_k_order[0]
+        for mate in self.mates():
+            mate.order = state.current_k_order[0]
         self.order = state.current_k_order[0]
         self.change_communication_role("ask", "answer")
         self.planner.dialog_history_list = []
-        self.teammate.planner.dialog_history_list = []
+        for mate in self.mates():
+            mate.planner.dialog_history_list = []
         # check if the teammate has finsihed his action
-        if self.teammate.current_ml_action_steps > 0:
-            current_ml_action_done = self.teammate.check_current_ml_action_done(state)
-            if current_ml_action_done:
-                self.teammate.current_ml_action = None
+        for mate in self.mates():
+            # (another cook may have found it done already this tick)
+            if mate.current_ml_action is not None and mate.current_ml_action_steps > 0:
+                current_ml_action_done = mate.check_current_ml_action_done(state)
+                if current_ml_action_done:
+                    mate.current_ml_action = None
 
-        if state.ml_actions[1 - self.agent_index] != None:
-            self.teammate_ml_actions.append(
-                {
-                    "timestamp": self.current_timestep,
-                    "action": state.ml_actions[1 - self.agent_index],
-                }
-            )
+        if not self.many_teammates():
+            if state.ml_actions[1 - self.agent_index] != None:
+                self.teammate_ml_actions.append(
+                    {
+                        "timestamp": self.current_timestep,
+                        "action": state.ml_actions[1 - self.agent_index],
+                    }
+                )
+        else:  # every other cook's completed actions, and this cook's own
+            for mate in self.teammates:
+                if state.ml_actions[mate.agent_index] is not None:
+                    self.teammate_ml_actions.append(
+                        {
+                            "timestamp": self.current_timestep,
+                            "agent": mate.name,
+                            "action": state.ml_actions[mate.agent_index],
+                        }
+                    )
+            if state.ml_actions[self.agent_index] is not None:
+                self.own_ml_actions.append(
+                    {
+                        "timestamp": self.current_timestep,
+                        "action": state.ml_actions[self.agent_index],
+                    }
+                )
 
         # if current ml action does not exist, generate a new one
         if self.current_ml_action is None:
@@ -666,7 +794,8 @@ class LLMAgents(LLMPair):
         # save statistic data
         # del history
         self.planner.dialog_history_list = []
-        self.teammate.planner.dialog_history_list = []
+        for mate in self.mates():
+            mate.planner.dialog_history_list = []
 
         self.trace = True
 
@@ -697,7 +826,11 @@ class LLMAgents(LLMPair):
         # 		current_motion_goal = 'None'
         # 	print(f'current motion goal for P{self.agent_index} is {current_motion_goal}')
 
-        if self.auto_unstuck and chosen_action != Action.INTERACT:
+        if (
+            self.auto_unstuck
+            and chosen_action != Action.INTERACT
+            and len(state.players) == 2
+        ):
             if self.prev_state is not None and state.players == self.prev_state.players:
                 if self.agent_index == 0:
                     joint_actions = list(
@@ -756,7 +889,7 @@ class LLMAgents(LLMPair):
         elif pkg_resources.get_distribution("overcooked_ai").version == "0.0.1":
             if "pickup" in self.current_ml_action:
                 return chosen_action, self.parse_action_params[0]
-            elif any(s in self.current_ml_action for s in self.mdp.interact_actions):
+            elif self.starts_utensil():
                 return chosen_action, "[START]"
             else:
                 return chosen_action, ""
@@ -835,6 +968,15 @@ class LLMAgents(LLMPair):
             )
         if "place_obj_on_counter()" == action_string:
             ml_action = f"place_obj_on_counter()"
+        elif action_string.startswith("place_obj_on_counter(") and self.many_teammates():
+            # more cooks: the item is for a teammate, on a counter shared with it
+            if len(params) != 1 or self.find_teammate(params[0]) is None:
+                names = ", ".join(t.name for t in self.teammates)
+                return (
+                    False,
+                    f"Wrong place_obj_on_counter() params. It takes the name of the teammate the item is for: {names}.",
+                )
+            ml_action = f"place_obj_on_counter({params[0]})"
         elif "pickup(" in action_string:
             if len(params) != 2:
                 return (
@@ -961,7 +1103,8 @@ class LLMAgents(LLMPair):
         # self
         self.communication_role = role
         a = self.load_prompt_file()
-        b = self.teammate.load_prompt_file()
+        for mate in self.mates():
+            b = mate.load_prompt_file()
 
     def change_correct_prompt(self):
         self.load_prompt_file(mode="correct")
@@ -1041,6 +1184,28 @@ class LLMAgents(LLMPair):
         return pre_message
 
     def communication(self, message, state):
+        """Talk with the teammate(s) the message is for; returns this cook's plan.
+
+        A pair always talks with each other. With more cooks the message names its
+        recipient(s) ('Runner: ...', 'Everyone: ...'; no name: everyone); each one in
+        turn answers and the two talk until one ends, as a pair does."""
+        if not self.many_teammates():
+            return self.talk_with(message, state)
+        partners = team_prompts.recipients(message, self, self.teammates)
+        own_history = list(self.planner.dialog_history_list)
+        keep, plan = self.teammate, ""
+        for partner in partners:
+            self.planner.dialog_history_list = list(own_history)
+            partner_keep = partner.teammate
+            self.teammate, partner.teammate = partner, self
+            try:
+                plan = self.talk_with(message, state)
+            finally:
+                partner.teammate = partner_keep
+        self.teammate = keep
+        return plan
+
+    def talk_with(self, message, state):
         # [observation,Analysis \n Player 0:talk]
         self.end_talk = False
         you_response = message
@@ -1280,10 +1445,7 @@ class LLMAgents(LLMPair):
     # Extract the analysis and TALK from the GPT reply.
     # mode:analysis,<TALK>
     def parse_response(self, response, mode, need_correct=False):
-        if self.agent_index == 0:
-            role = "Chef"
-        else:
-            role = "Assistant"
+        role = re.escape(self.name)
         if mode == "analysis":
             pattern = f"(?:{role})\s+analysis\s*:?\s*(.*?)\s*(?:{role})\s+plan:"
             match = re.findall(pattern, response, re.DOTALL | re.IGNORECASE)
@@ -1574,12 +1736,7 @@ class LLMAgents(LLMPair):
         # add_to_queue: if replace the old action_wait_parse with  new action list.
         print("\n===== Parser =====\n")
         # parse the sentence in plan into action_string
-        if self.agent_index == 0:
-            pattern = r"Chef\s+plan\s*:?\s*(.*?)(?:\s+|\n+)?$"
-        elif self.agent_index == 1:
-            pattern = r"Assistant\s+plan\s*:?\s*(.*?)(?:\s+|\n+)?$"
-        else:
-            return "wait(1)" if add_to_queue else ["wait(1)"]
+        pattern = re.escape(self.name) + r"\s+plan\s*:?\s*(.*?)(?:\s+|\n+)?$"
         match = re.findall(pattern, response, re.DOTALL | re.IGNORECASE)
         action_string = ""
         if match:
@@ -1623,6 +1780,14 @@ class LLMAgents(LLMPair):
 	"""
     ##################
 
+    def starts_utensil(self):
+        """The current action starts a utensil (cook, cut, bake, stir). By its name:
+        a teammate named in place_obj_on_counter(<teammate>) may contain one."""
+        call = self.current_ml_action or ""
+        if "place_obj_on_counter" in call:
+            return False
+        return any(s in call for s in self.mdp.interact_actions)
+
     def check_current_ml_action_done(self, state):
         """
         checks if the current ml action is done
@@ -1637,7 +1802,7 @@ class LLMAgents(LLMPair):
                 player.has_object()
                 and player.get_object().name == self.parse_action_params[0]
             )
-        elif any(s in self.current_ml_action for s in self.mdp.interact_actions):
+        elif self.starts_utensil():
             return (
                 self.parse_action_params[0]
                 in self.mdp.get_utensil_states(state)["cooking"]
@@ -1654,14 +1819,14 @@ class LLMAgents(LLMPair):
         elif "deliver" in self.current_ml_action:
             return not player.has_object()
         elif "recipe" in self.current_ml_action:
-            if self.actor == "chef":
+            if self.has_recipe:
                 chef = self
                 if chef.time_to_wait == 0:
                     self.load_recipe()
                 else:
                     self.time_to_wait -= 1
             else:
-                chef = self.teammate
+                chef = self.recipe_holder()
             return self.order in chef.recipe
         elif "wait" in self.current_ml_action:
             return self.time_to_wait <= 0
@@ -1726,19 +1891,21 @@ class LLMAgents(LLMPair):
             flag2 = len(self.find_motion_goals(state)) == 0
             if flag2:
                 failed_message = f"{self.actor} can not reach the destination.Please check if the destination is in your space.Please check if you can interact it. You can let your teammate pick the ingredient from utensil and put in on the counter, then pick up ingredient from the counter.\n"
+                helpers = " or ".join(self.dispenser_cooks())
                 if "counter" in self.parse_action_params:
                     failed_message = (
                         f"There is no {self.parse_action_params[0]} on counter {self.actor} can visited."
                         + (
-                            "Assistant can directly pick ingredients from dispenser.\n"
-                            if self.actor == "assistant"
-                            else "If assistant is already preparing ingredient for you,you should wait.\n"
+                            f"{self.name} can directly pick ingredients from dispenser.\n"
+                            if self.reaches_dispensers()
+                            else f"If {helpers} is already preparing ingredient for you,you should wait.\n"
                         )
                     )
                 elif (
-                    "dispenser" in self.parse_action_params[1] and self.actor == "chef"
+                    "dispenser" in self.parse_action_params[1]
+                    and not self.reaches_dispensers()
                 ):
-                    failed_message = f"Chef can not directly access dispenser.Chef can gain ingredients with the help of assistant."
+                    failed_message = f"{self.name} can not directly access dispenser.{self.name} can gain ingredients with the help of {helpers}."
             elif has_object:
                 failed_message = f"There is object in {self.actor}'s hand, so can not pick other thing.\n"
             # check if the item is in the destination
@@ -1786,10 +1953,17 @@ class LLMAgents(LLMPair):
                 failed_message = f"You can not put dish into any utensil. Dish can only be placed on counter.\n"
             return failed_message
         elif "place_obj_on_counter" in self.current_ml_action:
+            target = self.counter_target()
             if not has_object:
                 failed_message = f"There is no object in {self.actor}'s hand, so can not place object on counter.\n"
             elif len(empty_counter) == 0:
                 failed_message = f"There is no empty counter to place object.\n"
+            elif target is not None:
+                shared = self.shared_counters(state, [target])
+                if not shared:
+                    failed_message = f"{self.name} shares no counter with {target.name}. Hand the item to a teammate whose area touches both.\n"
+                elif not any(c in empty_counter for c in shared):
+                    failed_message = f"There is no empty counter shared with {target.name}.\n"
             return failed_message
         elif "fill" in self.current_ml_action:
             # check if the recipe need dish
@@ -1840,10 +2014,8 @@ class LLMAgents(LLMPair):
             return failed_message
         # the same as pickup(toast,counter)
         elif "check_recipe" in self.current_ml_action:
-            if self.actor != "chef":
-                failed_message = (
-                    f"Assistant can not check recipe.Only chef can do it.\n"
-                )
+            if not self.has_recipe:
+                failed_message = f"{self.name} can not check recipe.Only {self.recipe_holder().name.lower()} can do it.\n"
             elif self.order in self.recipe.keys():
                 failed_message = f"You have get the recipe before. Look at the <Recipe need to know> part.\n"
             else:
@@ -1885,15 +2057,16 @@ class LLMAgents(LLMPair):
             for idx, value in enumerate(self.planner.dialog_history_list)
             if idx not in del_list
         ]
-        del_list = []
-        for index, dialog in enumerate(self.teammate.planner.dialog_history_list):
-            if any(s == dialog["role"] for s in ["talk", "analysis", "plan"]):
-                del_list.append(index)
-        self.teammate.planner.dialog_history_list = [
-            value
-            for idx, value in enumerate(self.teammate.planner.dialog_history_list)
-            if idx not in del_list
-        ]
+        for mate in self.mates():
+            del_list = []
+            for index, dialog in enumerate(mate.planner.dialog_history_list):
+                if any(s == dialog["role"] for s in ["talk", "analysis", "plan"]):
+                    del_list.append(index)
+            mate.planner.dialog_history_list = [
+                value
+                for idx, value in enumerate(mate.planner.dialog_history_list)
+                if idx not in del_list
+            ]
 
     def generate_failure_feedback(self, action, failed_message):
         failure_feedback = f"Your action {action} raised an error: " + failed_message
@@ -1909,14 +2082,19 @@ class LLMAgents(LLMPair):
 	"""
     ##################
 
+    def counter_target(self):
+        """The teammate named in place_obj_on_counter(<teammate>), or None."""
+        action, params = self.parse_params_in_action(self.current_ml_action or "")
+        if "place_obj_on_counter" not in action or len(params) != 1:
+            return None
+        return self.find_teammate(params[0])
+
     def find_shared_counters(self, state, mlam):
         counter_dicts = query_counter_states(self.mdp, state)
 
-        counter_list = get_intersect_counter(
-            state.players_pos_and_or[self.agent_index],
-            state.players_pos_and_or[1 - self.agent_index],
-            self.mdp,
-            self.mlam,
+        target = self.counter_target()
+        counter_list = self.shared_counters(
+            state, [target] if target is not None else None
         )
 
         print("counter_list = {}".format(counter_list))
@@ -2062,7 +2240,14 @@ class LLMAgents(LLMPair):
             "height": len(self.mlam.mdp.terrain_mtx),
             "width": len(self.mlam.mdp.terrain_mtx[0]),
         }
-        other_pos_and_or = state.players_pos_and_or[1 - self.agent_index]
+        if len(state.players) == 2:
+            other_pos_and_or = state.players_pos_and_or[1 - self.agent_index]
+        else:  # every other cook blocks the way
+            other_pos_and_or = [
+                p
+                for i, p in enumerate(state.players_pos_and_or)
+                if i != self.agent_index
+            ]
         action_plan, plan_cost = find_path(
             start_pos_and_or, other_pos_and_or, goal, terrain_matrix
         )

@@ -59,11 +59,12 @@ from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld, OvercookedS
 from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
 from overcooked_ai_py.agents.agent import AgentGroup
 from overcooked_ai_py.mdp.actions import Action
-from collab.modules import statistics_dict, tokenizer,model, turn_statistics_dict
+from collab.modules import statistics_dict, tokenizer,model, turn_statistics_dict, make_statistics_dict
+from overcooked_ai_py.data.layouts import layout_names
 import collab.modules as llm_modules
 from collab.web_util import output_to_port, check_port_in_use, change_port
 import socket
-from utils import make_agent, get_example_embedding, combine_statistic_dict
+from utils import make_agent, get_example_embedding, combine_statistic_dict, combine_statistic_dicts
 
 
 def main(variant):
@@ -88,14 +89,19 @@ def main(variant):
     
     p0_algo = variant['p0']
     p1_algo = variant['p1']
+    # one cook per player of the layout; its role (chef, assistant, ...) comes from the layout
+    actor_list = [a['role'] for a in mdp.agents_spec]
+    algos = [p0_algo, p1_algo] + [variant['pn']] * (len(actor_list) - 2)
     print(f"\n===P0 agent: {p0_algo} | P1 agent: {p1_algo}===\n")
+    if len(actor_list) > 2:
+        print(f"===Cooks: {', '.join(actor_list)}===\n")
+    n_cooks = len(actor_list)
 
 
     start_time = time.time()
     results = []
 
     actor_num = 0
-    actor_list = ['chef','assistant']
     for i in range(episode):  
         
         agents_list = []
@@ -139,7 +145,8 @@ def main(variant):
             break
 
         
-        for alg in [p0_algo, p1_algo]:
+        actor_num = 0
+        for alg in algos:
             if alg == "LLMPair":
                 if mode!="human":
                     assert variant['gpt_model']!=None, print(f'you should choose a gpt model')
@@ -163,6 +170,10 @@ def main(variant):
 
         team = AgentGroup(*agents_list)
         team.reset()
+        # per-cook lists: two cooks keep the game's original (global) record
+        episode_stats = statistics_dict if n_cooks == 2 else make_statistics_dict(n_cooks)
+        if n_cooks > 2:  # evaluation.py reads the recipes of the layout for subtasks
+            episode_stats.update(layout=layout, order=args.order, cooks=actor_list)
 
         env.reset()
         r_total = 0
@@ -180,8 +191,9 @@ def main(variant):
                 print(a_t)
                 dialogue_t = team.reset_dialogue()
                 print(f"\n-----------Controller-----------\n")    
-                print(f"action: P0 {Action.to_char(a_t[0])} | P1 {Action.to_char(a_t[1])}")
+                print("action: " + " | ".join(f"P{k} {Action.to_char(a)}" for k, a in enumerate(a_t)))
                 parm = ingredient_for_pickup
+                delivering = [k for k, a in enumerate(team.agents) if "deliver" in (a.current_ml_action or "")]
 
                 obs, reward, done, env_info = env.step(a_t,parm)
 
@@ -194,28 +206,37 @@ def main(variant):
                 print(skills)
 
                 r_total += reward
-                if reward>0:
-                    statistics_dict['total_order_finished'].append(s_t.current_k_order[0])
-                    team.agents[1].teammate_ml_actions.append({'timestamp':t,'action':"deliver_soup()"})
-                rprint("[red]" + f'r: {reward} | total: {r_total}\n\n')
-                print(f"P0's real behavior: {team.agents[1].teammate_ml_actions}")
-                print(f"P1's real behavior: {team.agents[0].teammate_ml_actions}")
+                if n_cooks == 2:
+                    if reward>0:
+                        episode_stats['total_order_finished'].append(s_t.current_k_order[0])
+                        team.agents[1].teammate_ml_actions.append({'timestamp':t,'action':"deliver_soup()"})
+                    rprint("[red]" + f'r: {reward} | total: {r_total}\n\n')
+                    print(f"P0's real behavior: {team.agents[1].teammate_ml_actions}")
+                    print(f"P1's real behavior: {team.agents[0].teammate_ml_actions}")
+                    # each cook's completed actions, as its teammate recorded them
+                    done_lists = [team.agents[1].teammate_ml_actions, team.agents[0].teammate_ml_actions]
+                else:
+                    if reward>0:
+                        episode_stats['total_order_finished'].append(s_t.current_k_order[0])
+                        server = team.agents[delivering[0] if delivering else 0]
+                        server.own_ml_actions.append({'timestamp':t,'action':"deliver_soup()"})
+                    rprint("[red]" + f'r: {reward} | total: {r_total}\n\n')
+                    for k, a in enumerate(team.agents):
+                        print(f"P{k}'s real behavior: {a.own_ml_actions}")
+                    done_lists = [a.own_ml_actions for a in team.agents]
 
 
                 #save statistics 
-                turn_statistics_dict_agent0 = team.agents[0].turn_statistics_dict
-                turn_statistics_dict_agent1 = team.agents[1].turn_statistics_dict
+                turn_statistics_dict_all = combine_statistic_dicts([a.turn_statistics_dict for a in team.agents],map,reward)
 
-                turn_statistics_dict_both = combine_statistic_dict(turn_statistics_dict_agent0,turn_statistics_dict_agent1,map,reward)
-
-                statistics_dict['total_timestamp'].append(t)
-                statistics_dict['total_score'] = r_total
-                statistics_dict['total_action_list'][0] = team.agents[1].teammate_ml_actions
-                statistics_dict['total_action_list'][1] = team.agents[0].teammate_ml_actions
-                statistics_dict['content'].append(turn_statistics_dict_both)
+                episode_stats['total_timestamp'].append(t)
+                episode_stats['total_score'] = r_total
+                for k, done in enumerate(done_lists):
+                    episode_stats['total_action_list'][k] = done
+                episode_stats['content'].append(turn_statistics_dict_all)
                 #statistics_dict['end_time'] = time.strftime("%Y-%m-%d %H:%M:%S")
                 with open(filename, 'w') as f:
-                    json.dump(statistics_dict,f,indent=4)
+                    json.dump(episode_stats,f,indent=4)
                 
                 if variant['test_mode'] == 'fix_task':
                     if reward != 0:
@@ -242,9 +263,10 @@ if __name__ == '__main__':
     parser = ArgumentParser(description='OvercookedAI Experiment')
 
     # these are basis parses
-    parser.add_argument('--layout', '-l', type=str, default='new_env', choices=['new_env'])
+    parser.add_argument('--layout', '-l', type=str, default='new_env', choices=layout_names(), help='kitchen layout; three_cooks and four_cooks have more than two cooks')
     parser.add_argument('--p0',  type=str, default='LLMPair', choices=['LLMPair', 'Human'], help='Algorithm for P0 agent 0')
     parser.add_argument('--p1', type=str, default='LLMPair', choices=['LLMPair', 'Human'], help='Algorithm for P1 agent 1')
+    parser.add_argument('--pn', type=str, default='LLMPair', choices=['LLMPair', 'Human'], help='Algorithm for the cooks after P1 (layouts with more than two cooks)')
     parser.add_argument('--horizon', type=int, default=120, help='Horizon steps in one game')
     parser.add_argument('--episode', type=int, default=1, help='Number of episodes')
 
