@@ -1,0 +1,16 @@
+{
+    "extends": "new_env",
+    "grid":  """XXXCXPX
+                I3X2X1X
+                D X X O
+                X X X X
+                XXXBXSX""",
+    "agents": [
+        {"role": "chef", "name": "Chef", "utensils": {"pot": "cook", "oven": "bake"},
+         "dispensers": [], "recipe": True, "deliver": True},
+        {"role": "assistant", "name": "Assistant",
+         "utensils": {"chopping_board": "cut", "blender": "stir"}, "dispensers": []},
+        {"role": "runner", "name": "Runner", "utensils": {},
+         "dispensers": ["dish_dispenser", "ingredient_dispenser"]}
+    ]
+}
