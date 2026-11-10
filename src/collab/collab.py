@@ -74,6 +74,27 @@ class LLMPair(object):
         raise NotImplementedError
 
 
+# A fixed list of several orders (OvercookedGridworld.fixed_orders): the single-order
+# rules, with the lines about one order replaced by the rule of
+# environment_rule_multi_task.txt (only the first order of the list scores).
+MULTI_ORDER_RULES = (
+    ("to complete a single order.", "to complete a list of orders, one after another."),
+    (
+        "- You only need to complete one order, so focus solely on the progress of that dish.",
+        "- You will see several orders. They must be delivered in the order listed: only "
+        "the first order of the list scores, and a dish delivered out of turn is lost. "
+        "You may prepare the next orders in parallel, but first guarantee the first order "
+        "can be done. The episode ends when every order is delivered.",
+    ),
+)
+
+
+def multi_order_rule(rule: str) -> str:
+    for old, new in MULTI_ORDER_RULES:
+        rule = rule.replace(old, new)
+    return rule
+
+
 class LLMAgents(LLMPair):
 
     def __init__(
@@ -188,6 +209,8 @@ class LLMAgents(LLMPair):
 
         with open(self.prompt_dir + "/environment_rule.txt", "r") as g:
             environment_rule = g.read()
+            if getattr(self.mdp, "fixed_orders", False) and not self.mdp.one_task_mode:
+                environment_rule = multi_order_rule(environment_rule)
             environment_rule = environment_rule.replace("{role}", self.name)
             prompt = prompt.replace("{environment_rule}", environment_rule)
             character_player = "Suppose you are a player who is proficient in the overcooked_ai game. Your goal is to cooperate with your teammate who is also a LLM agent in order to get a high score."
@@ -347,12 +370,10 @@ class LLMAgents(LLMPair):
             "Order:" + self.order
         )  # +("(Has recipe)"if self.order in chef.recipe.keys() else "(No recipe)")
         if not self.mdp.one_task_mode:
-            order_prompt += (
-                "<<" + state.current_k_order[1]
-            )  # +("(Has recipe)"if state.current_k_order[1] in chef.recipe.keys() else "(No recipe)")
-            order_prompt += (
-                "<<" + state.current_k_order[2] + "\n"
-            )  # +("(Has recipe)\n"if state.current_k_order[2] in chef.recipe.keys() else "(No recipe)\n")
+            # the next two orders; a fixed order list (fixed_orders) may have fewer left
+            for next_order in list(state.current_k_order)[1:3]:
+                order_prompt += "<<" + next_order
+            order_prompt += "\n"
         else:
             order_prompt += "\n"
 
@@ -796,19 +817,21 @@ class LLMAgents(LLMPair):
             print(f"function_name : {function_name},params_name:{params}")
         return function_name, params
 
-    def load_recipe(self):
-        if self.order in self.recipe.keys():
+    def load_recipe(self, order=None):
+        """Load the recipe of ``order`` (default: the current order)."""
+        order = self.order if order is None else order
+        if order in self.recipe.keys():
             warnings.warn("Prompt has load the recipe")
             return
         recipe_name_list = os.listdir(PROMPT_DIR + "/recipe/")
         recipe_filename = ""
         for r in recipe_name_list:
             r_name = r[2:-4]
-            if self.order == r_name:
+            if order == r_name:
                 recipe_filename = r
                 break
         with open(PROMPT_DIR + "/recipe/" + recipe_filename) as r:
-            self.recipe[self.order] = r.read()
+            self.recipe[order] = r.read()
 
     def parse_ml_action(self, action_string):
         ml_action = ""
