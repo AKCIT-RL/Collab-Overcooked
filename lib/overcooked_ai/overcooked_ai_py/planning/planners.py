@@ -7,7 +7,7 @@ from overcooked_ai_py.mdp.actions import Action, Direction
 from overcooked_ai_py.mdp.overcooked_mdp import OvercookedState, PlayerState, OvercookedGridworld
 from overcooked_ai_py.data.planners import load_saved_action_manager, PLANNERS_DIR
 
-from overcooked_ai_py.planning.search import get_visitable_positions 
+from overcooked_ai_py.planning.search import get_visitable_positions, visitable_by_others
 # Run planning logic with additional checks and
 # computation to prevent or identify possible minor errors
 SAFE_RUN = False
@@ -321,8 +321,14 @@ class JointMotionPlanner(object):
         # Graph problem that returns optimal paths from 
         # starting positions to goal positions (without
         # accounting for orientations)
-        self.joint_graph_problem = self._joint_graph_from_grid()
-        self.all_plans = self._populate_all_plans(debug)
+        if mdp.num_players > 2:
+            # joint plans enumerate every joint position, which grows as positions
+            # ** players; the game's agents plan one at a time (motion_planner and
+            # search.find_path), so with more than two players none is precomputed
+            self.joint_graph_problem, self.all_plans = None, {}
+        else:
+            self.joint_graph_problem = self._joint_graph_from_grid()
+            self.all_plans = self._populate_all_plans(debug)
 
     def get_low_level_action_plan(self, start_jm_state, goal_jm_state):
         """
@@ -837,7 +843,7 @@ class MediumLevelActionManager(object):
             
         
         visitable_cur = get_visitable_positions(player_positions[player_index], self.mdp)  
-        visitable_oth = get_visitable_positions(player_positions[1 - player_index], self.mdp) 
+        visitable_oth = visitable_by_others(player_positions, player_index, self.mdp)
 
         separate_states = [] 
         
@@ -862,13 +868,13 @@ class MediumLevelActionManager(object):
         obj_locations = self.mdp.utensil_state_dict[utensil]['position']
         pattern = r'\d+'
         numbers = re.findall(pattern, utensil)
-        if numbers[0]=='0' or numbers[0] =='1':
+        if numbers and numbers[0].isdigit():
             obj_locations = [obj_locations]
         else:
             raise ValueError("Wrong pot number ID")
         
         visitable_cur = get_visitable_positions(player_positions[player_index], self.mdp)  
-        visitable_oth = get_visitable_positions(player_positions[1 - player_index], self.mdp) 
+        visitable_oth = visitable_by_others(player_positions, player_index, self.mdp)
 
         separate_states = [] 
         
@@ -929,7 +935,7 @@ class MediumLevelActionManager(object):
         dish_pickup_locations = dish_dispenser_locations + counter_objects['dish']          
 
         visitable_cur = get_visitable_positions(player_positions[player_index], self.mdp)  
-        visitable_oth = get_visitable_positions(player_positions[1 - player_index], self.mdp) 
+        visitable_oth = visitable_by_others(player_positions, player_index, self.mdp)
 
         separate_states = [] 
 
