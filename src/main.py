@@ -78,7 +78,15 @@ def main(variant):
     mdp = OvercookedGridworld.from_layout_name(layout)
 
     #set order according to parser
-    if variant['order'] !="" and check_recipe_parse(variant):
+    orders = [o for o in variant.get('orders', "").split(",") if o]
+    if orders:
+        # several orders: a fixed list, delivered in order; the episode ends when it is empty
+        for o in orders:
+            check_recipe_parse({**variant, 'order': o})
+        mdp.start_order_list = list(orders)
+        mdp.fixed_orders = True
+        mdp.one_task_mode = len(orders) == 1
+    elif variant['order'] !="" and check_recipe_parse(variant):
         mdp.start_order_list = [variant['order']]
         # 1 task mode
         mdp.one_task_mode = True
@@ -107,12 +115,13 @@ def main(variant):
         agents_list = []
 
         current_time = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        save_dir = f"{args.statistics_save_dir}/{args.gpt_model}/{args.order}"
+        run_name = args.run_name or args.order
+        save_dir = f"{args.statistics_save_dir}/{args.gpt_model}/{run_name}"
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
-        filename = f"{save_dir}/experiment_{current_time}_{args.order}.json"
+        filename = f"{save_dir}/experiment_{current_time}_{run_name}.json"
         # raw LLM input/output; must not start with "experiment" or evaluation.py will try to load it
-        llm_modules.RAW_LOG_PATH = f"{save_dir}/llm_calls_{current_time}_{args.order}.jsonl"
+        llm_modules.RAW_LOG_PATH = f"{save_dir}/llm_calls_{current_time}_{run_name}.jsonl"
 
         if mode == 'develop':
             """
@@ -170,6 +179,10 @@ def main(variant):
 
         team = AgentGroup(*agents_list)
         team.reset()
+        if orders:  # the Chef knows the recipe of every order from the start
+            chef = next(a for a in team.agents if getattr(a, 'actor', '') == 'chef')
+            for o in orders:
+                chef.load_recipe(o)
         # per-cook lists: two cooks keep the game's original (global) record
         episode_stats = statistics_dict if n_cooks == 2 else make_statistics_dict(n_cooks)
         if n_cooks > 2:  # evaluation.py reads the recipes of the layout for subtasks
@@ -238,7 +251,11 @@ def main(variant):
                 with open(filename, 'w') as f:
                     json.dump(episode_stats,f,indent=4)
                 
-                if variant['test_mode'] == 'fix_task':
+                if orders and done:  # every order delivered, or the horizon
+                    if env.mdp.is_terminal(env.state):
+                        print("Task successed!")
+                    break
+                if variant['test_mode'] == 'fix_task' and not orders:
                     if reward != 0:
                         print("Task successed!")
                         #Human-eval: set task success message
@@ -288,12 +305,16 @@ if __name__ == '__main__':
     parser.add_argument('--log_dir', type=str, default=None, help='dir to save result')
     parser.add_argument('--debug', type=boolean_argument, default=True, help='debug mode')
     parser.add_argument('--order', type=str, default="", help='1 task order name')
+    parser.add_argument('--orders', type=str, default="", help='comma-separated fixed order list (a banquet), delivered in order; overrides --order')
+    parser.add_argument('--run_name', type=str, default="", help='name of the save folder and files (default: --order, or the --orders joined by +)')
 
     #
     parser.add_argument('--statistics_save_dir', type=str, default='data', help='save directory of LLM statistics')
 
 
     args = parser.parse_args()
+    if args.orders and not args.run_name:
+        args.run_name = "+".join(o for o in args.orders.split(",") if o)
     variant = vars(args)
 
     start_time = time.time()
