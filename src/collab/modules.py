@@ -23,64 +23,59 @@ with open(gpt4_key_file, "r") as f:
     context = f.read()
 openai_key = context.split("\n")[0]
 
-# global statistics
-statistics_dict = {
-    "total_timestamp": [],
-    "total_order_finished": [],
-    "total_score": 0,
-    "total_action_list": [[], []],
-    "content": [],
-}
+# global statistics; per-cook lists have one entry per cook (two in the original game)
+def make_statistics_dict(num_agents=2):
+    return {
+        "total_timestamp": [],
+        "total_order_finished": [],
+        "total_score": 0,
+        "total_action_list": [[] for _ in range(num_agents)],
+        "content": [],
+    }
+
 
 # turn statistics
-turn_statistics_dict = {
-    "timestamp": 0,
-    "order_list": [],
-    "actions": [],
-    "map": "",
-    "statistical_data": {
-        "score": 0,
-        "communication": [
-            {"call": 0, "turn": [], "token": []},
-            {"call": 0, "turn": [], "token": []},
-        ],
-        "error": [
-            {
-                "format_error": {"error_num": 0, "error_message": []},
-                "validator_error": {"error_num": 0, "error_message": []},
-            },
-            {
-                "format_error": {"error_num": 0, "error_message": []},
-                "validator_error": {"error_num": 0, "error_message": []},
-            },
-        ],
-        "error_correction": [
-            {
-                "format_correction": {"correction_num": 0, "correction_tokens": []},
-                "validator_correction": {
-                    "correction_num": 0,
-                    "reflection_obtain": [],
-                    "correction_tokens": [],
-                },
-            },
-            {
-                "format_correction": {"correction_num": 0, "correction_tokens": []},
-                "validator_correction": {
-                    "correction_num": 0,
-                    "reflection_obtain": [],
-                    "correction_tokens": [],
-                },
-            },
-        ],
-    },
-    "content": {
-        "observation": [[], []],
-        "reflection": [[], []],
-        "content": [[], []],
-        "action_list": [[], []],
-        "original_log": "",
-    },
-}
+def make_turn_statistics_dict(num_agents=2):
+    def each(make):
+        return [make() for _ in range(num_agents)]
+
+    return {
+        "timestamp": 0,
+        "order_list": [],
+        "actions": [],
+        "map": "",
+        "statistical_data": {
+            "score": 0,
+            "communication": each(lambda: {"call": 0, "turn": [], "token": []}),
+            "error": each(
+                lambda: {
+                    "format_error": {"error_num": 0, "error_message": []},
+                    "validator_error": {"error_num": 0, "error_message": []},
+                }
+            ),
+            "error_correction": each(
+                lambda: {
+                    "format_correction": {"correction_num": 0, "correction_tokens": []},
+                    "validator_correction": {
+                        "correction_num": 0,
+                        "reflection_obtain": [],
+                        "correction_tokens": [],
+                    },
+                }
+            ),
+        },
+        "content": {
+            "observation": each(list),
+            "reflection": each(list),
+            "content": each(list),
+            "action_list": each(list),
+            "original_log": "",
+        },
+    }
+
+
+statistics_dict = make_statistics_dict(2)
+turn_statistics_dict = make_turn_statistics_dict(2)
 
 # LLM models
 tokenizer, model = None, None
@@ -245,7 +240,10 @@ class Module(object):
                 return "", 0
             try:
                 if "human" in self.model:
-                    if messages[-1]["content"].find("Suppose you are a Chef") != -1:
+                    # the web UI's player slot: agent<index> (set by the game's agent)
+                    if getattr(self, "agent_index", None) is not None:
+                        receiver = f"agent{self.agent_index}"
+                    elif messages[-1]["content"].find("Suppose you are a Chef") != -1:
                         receiver = "agent0"
                     elif (
                         messages[-1]["content"].find("Suppose you are a Assistant")
@@ -260,7 +258,7 @@ class Module(object):
                     )
                     human_message = messages[-1]["content"][input_part:]
                     recipe = None
-                    if receiver == "agent0":
+                    if getattr(self, "has_recipe", receiver == "agent0"):
                         recipe_start = messages[-1]["content"].find(
                             "<Recipe need to know>:\n"
                         ) + len("<Recipe need to know>:\n")
@@ -416,7 +414,11 @@ class Module(object):
             response_template = (
                 "{role} analysis: [NOTHING]\n{role} plan: {plan}\n{role} say: {say}"
             )
-            if response["agent"] == "agent1":
+            if getattr(self, "agent_index", None) is not None and response[
+                "agent"
+            ] == f"agent{self.agent_index}":
+                role = self.name
+            elif response["agent"] == "agent1":
                 role = "Assistant"
             elif response["agent"] == "agent0":
                 role = "Chef"

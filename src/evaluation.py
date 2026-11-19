@@ -7,7 +7,7 @@ from argparse import ArgumentParser
 import pandas as pd
 from rich import print as rprint
 
-from eval_utils import Evaluation, ExpLog
+from eval_utils import Evaluation, ExpLog, has_more_than_two_cooks, summarize_team_logs
 from distutils.util import strtobool
 
 models = ["gpt-4o"]
@@ -36,6 +36,12 @@ def main(variant):
                     auto_order_list.append(exp_log.get_secondary_order_list(idx, 0)[0])
                 eval = Evaluation(order_name_list=auto_order_list,exp_log=exp_log)
             else:
+                log_dir = variant['log_dir'] + '/' + variant['model'] + '/' + variant['order']
+                if os.path.isdir(log_dir) and has_more_than_two_cooks(log_dir):
+                    # more than two cooks: no reference trajectories; success, subtasks, ticks
+                    save_dir = os.path.join(variant["save_dir"], variant["model"], variant["order"])
+                    print(summarize_team_logs(log_dir, save_dir, variant["layout"]))
+                    return
                 exp_log = ExpLog(variant['log_dir']+ '/' + variant['model'] + '/' + variant['order'])
                 if exp_log.__len__() == 0:
                     print(
@@ -109,6 +115,7 @@ if __name__ == '__main__':
     parser.add_argument('--order', type=str,default='AUTO', help='1 task order name, "AUTO" represents automatic recognition')
     parser.add_argument('--recipe_dir', type=str, default='prompts/recipe', help='The dir of the recipe and reference')
     parser.add_argument('--save_dir', type=str, default='eval_result', help='dir to write evaluation results to')
+    parser.add_argument('--layout', type=str, default='new_env', help='layout of logs that do not name theirs (subtask summary of more than two cooks)')
 
 
     args = parser.parse_args()

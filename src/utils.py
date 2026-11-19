@@ -115,17 +115,23 @@ def get_example_embedding(example_path, save_path=""):
 
 
 def combine_statistic_dict(dict1, dict2, map, score):
-    rs = dict1
-    rs["actions"].append(dict2["actions"][0])
-    rs["map"] = map
-    rs["statistical_data"]["score"] = score
-    rs["statistical_data"]["communication"][1] = dict2["statistical_data"]["communication"][1]
-    rs["statistical_data"]["error"][1] = dict2["statistical_data"]["error"][1]
-    rs["statistical_data"]["error_correction"][1] = dict2["statistical_data"]["error_correction"][1]
+    return combine_statistic_dicts([dict1, dict2], map, score)
 
-    rs["content"]["observation"][1] = dict2["content"]["observation"][1]
-    rs["content"]["reflection"][1] = dict2["content"]["reflection"][1]
-    rs["content"]["content"][1] = dict2["content"]["content"][1]
-    rs["content"]["action_list"][1] = dict2["content"]["action_list"][1]
 
+def combine_statistic_dicts(dicts, map, score):
+    """One tick's statistics of every cook -> the game's per-tick record: cook i's
+    entries come from cook i's own dict (the first dict is reused as the record)."""
+    rs = dicts[0]
+    for i, other in enumerate(dicts[1:], start=1):
+        rs["actions"].append(other["actions"][0])
+        if i == 1:
+            rs["map"] = map
+            rs["statistical_data"]["score"] = score
+        for key in ("communication", "error", "error_correction"):
+            rs["statistical_data"][key][i] = other["statistical_data"][key][i]
+        for key in ("observation", "reflection", "content", "action_list"):
+            rs["content"][key][i] = other["content"][key][i]
+    if len(dicts) == 1:
+        rs["map"] = map
+        rs["statistical_data"]["score"] = score
     return rs
